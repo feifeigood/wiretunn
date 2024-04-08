@@ -11,6 +11,7 @@ multicore = ["tokio/rt-multi-thread", "num_cpus"]
 [dependencies]
 thiserror = "1"
 cfg-if = "1.0.0"
+libc = "0.2.153"
 serde = { version = "1.0.197", features = ["derive"] }
 serde_with = "3.7.0"
 toml = "0.8.12"

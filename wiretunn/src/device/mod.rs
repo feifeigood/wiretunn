@@ -35,7 +35,7 @@ use tokio::{
     time,
 };
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info, trace, warn, Level};
+use tracing::{debug, error, info, trace, warn, Level};
 use tun::{AsyncDevice, Configuration as TunConfiguration, Device as _, TunPacket};
 
 use allowed_ips::AllowedIps;
@@ -59,6 +59,8 @@ pub enum Error {
     TunError(#[from] tun::Error),
     #[error("spawn error: {0}")]
     JoinError(#[from] JoinError),
+    #[error("{0}")]
+    IOCtl(io::Error),
 }
 
 #[derive(Default, Debug)]
@@ -142,6 +144,13 @@ impl WgDeviceBuilder {
             device_inner.set_fwmark(mark).await?;
         }
 
+        let ifindex = {
+            #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+            ifname_to_index(&name).ok_or(Error::IOCtl(io::Error::other(
+                "No interface found for the index",
+            )))?
+        };
+
         let mut routes = vec![];
         for peer in config.wg_peers.iter() {
             let pub_key = peer.public_key.clone();
@@ -155,9 +164,7 @@ impl WgDeviceBuilder {
 
             // Add peer route
             peer.allowed_ips.iter().for_each(|ip| {
-                routes.push(
-                    Route::new(ip.addr(), ip.prefix_len()).with_gateway(config.address.addr()),
-                );
+                routes.push(Route::new(ip.addr(), ip.prefix_len()).with_ifindex(ifindex));
             });
 
             device_inner
@@ -173,12 +180,31 @@ impl WgDeviceBuilder {
                 .await;
         }
 
-        // Apply static route to WireGuard
-        {
+        // If fd provide, that should set route by fd creator like VPNService or NetworkExtension
+        #[cfg(unix)]
+        if self.raw_fd.is_none() {
+            // Apply static route to WireGuard
             let handle = Handle::new()?;
-            for route in routes.iter() {
+            let exist_routes = handle.list().await?;
+            let add_routes = routes.iter_mut().filter(|r1| {
+                for r2 in exist_routes.iter() {
+                    if r1.destination.eq(&r2.destination)
+                        && r1.prefix.eq(&r2.prefix)
+                        && r1.ifindex.eq(&r2.ifindex)
+                    {
+                        debug!(
+                            "Route {}/{} -> via {:?} dev {:?} already exists",
+                            r2.destination, r2.prefix, r2.gateway, r2.ifindex,
+                        );
+                        return false;
+                    }
+                }
+                true
+            });
+
+            for route in add_routes.into_iter() {
                 if let Err(err) = handle.add(route).await {
-                    warn!("Add route error: {}", err);
+                    warn!("Route add error: {}", err);
                 }
             }
         }
@@ -757,6 +783,20 @@ where
     sock.into_raw_fd();
 
     result
+}
+
+#[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+fn ifname_to_index(name: &str) -> Option<u32> {
+    use std::ffi::CString;
+
+    let ifname = CString::new(name).ok()?;
+    let ifindex = unsafe { libc::if_nametoindex(ifname.as_ptr()) };
+
+    if ifindex != 0 {
+        Some(ifindex)
+    } else {
+        None
+    }
 }
 
 fn trace_ip_packet(message: &str, packet: &[u8]) {
