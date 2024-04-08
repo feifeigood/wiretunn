@@ -108,6 +108,8 @@ impl WgDeviceBuilder {
         tun_config.address(config.address.addr());
         tun_config.destination(config.address.addr());
         tun_config.netmask(config.address.netmask());
+
+        // Set the interface mtu
         if let Some(mtu) = config.mtu {
             tun_config.mtu(mtu);
         };
@@ -739,7 +741,7 @@ impl Default for IndexLfsr {
 }
 
 /// Sets the value for the `SO_MARK` option on this socket.
-#[cfg(unix)]
+#[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
 fn set_socket_fwmark<S>(socket: &S, mark: u32) -> io::Result<()>
 where
     S: std::os::unix::io::AsRawFd,
