@@ -145,10 +145,19 @@ impl WgDeviceBuilder {
         }
 
         let ifindex = {
-            #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
-            ifname_to_index(&name).ok_or(Error::IOCtl(io::Error::other(
-                "No interface found for the index",
-            )))?
+            cfg_if::cfg_if! {
+                if #[cfg(target_os = "macos")] {
+                    net_route::ifname_to_index(&name).ok_or(Error::IOCtl(io::Error::other(
+                        "No interface found for the index",
+                    )))?
+                } else if #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))] {
+                    ifname_to_index(&name).ok_or(Error::IOCtl(io::Error::other(
+                        "No interface found for the index",
+                    )))?
+                } else {
+                    unimplemented!()
+                }
+            }
         };
 
         let mut routes = vec![];
