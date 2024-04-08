@@ -10,6 +10,9 @@ pub struct WgDeviceConfig {
     pub private_key: x25519::StaticSecret,
     pub listen_port: Option<u16>,
     pub address: IpNet,
+    #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+    pub fwmark: Option<u32>,
+    pub mtu: Option<i32>,
     #[serde(rename = "peer")]
     pub wg_peers: Vec<WgPeerConfig>,
 }

@@ -35,7 +35,7 @@ use tokio::{
     time,
 };
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info, trace, Level};
+use tracing::{error, info, trace, warn, Level};
 use tun::{AsyncDevice, Configuration as TunConfiguration, Device as _, TunPacket};
 
 use allowed_ips::AllowedIps;
@@ -108,6 +108,9 @@ impl WgDeviceBuilder {
         tun_config.address(config.address.addr());
         tun_config.destination(config.address.addr());
         tun_config.netmask(config.address.netmask());
+        if let Some(mtu) = config.mtu {
+            tun_config.mtu(mtu);
+        };
 
         // Create a tunnel device
         let iface = tun::create_as_async(&tun_config)?;
@@ -118,6 +121,8 @@ impl WgDeviceBuilder {
         let mut device_inner = WgDeviceInner {
             key_pair: RwLock::new(Default::default()),
             listen_port: Default::default(),
+            #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+            fwmark: Default::default(),
             iface: packet_in,
             udp4: Default::default(),
             udp6: Default::default(),
@@ -129,6 +134,11 @@ impl WgDeviceBuilder {
         };
         device_inner.set_key(&config.private_key);
         device_inner.open_listen_socket(0).await?; // Start listening on a random port
+
+        #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+        if let Some(mark) = config.fwmark {
+            device_inner.set_fwmark(mark).await?;
+        }
 
         let mut routes = vec![];
         for peer in config.wg_peers.iter() {
@@ -165,7 +175,9 @@ impl WgDeviceBuilder {
         {
             let handle = Handle::new()?;
             for route in routes.iter() {
-                handle.add(route).await?;
+                if let Err(err) = handle.add(route).await {
+                    warn!("Add route error: {}", err);
+                }
             }
         }
 
@@ -386,6 +398,8 @@ pub(super) struct WgDeviceInner {
     key_pair: RwLock<Option<(x25519::StaticSecret, x25519::PublicKey)>>,
 
     listen_port: u16,
+    #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+    fwmark: Option<u32>,
 
     iface: Sender<Vec<u8>>,
     udp4: Option<Arc<UdpSocket>>,
@@ -564,6 +578,29 @@ impl WgDeviceInner {
         *self.rate_limiter.write() = Some(rate_limiter);
     }
 
+    #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+    pub async fn set_fwmark(&mut self, mark: u32) -> Result<(), Error> {
+        self.fwmark = Some(mark);
+
+        // First set fwmark on listeners
+        if let Some(ref sock) = self.udp4 {
+            set_socket_fwmark(sock, mark)?;
+        }
+
+        if let Some(ref sock) = self.udp6 {
+            set_socket_fwmark(sock, mark)?;
+        }
+
+        // Then on all currently connected sockets
+        for peer in self.peers.iter() {
+            if let Some(ref sock) = peer.lock().await.endpoint().conn {
+                set_socket_fwmark(sock, mark)?;
+            }
+        }
+
+        Ok(())
+    }
+
     pub async fn remove_peer(&self, pub_key: &x25519::PublicKey) {
         if let Some((_, peer)) = self.peers.remove(pub_key) {
             // Found a peer to remove, now purge all references to it:
@@ -699,6 +736,25 @@ impl Default for IndexLfsr {
             mask: Self::random_index(),
         }
     }
+}
+
+/// Sets the value for the `SO_MARK` option on this socket.
+#[cfg(unix)]
+fn set_socket_fwmark<S>(socket: &S, mark: u32) -> io::Result<()>
+where
+    S: std::os::unix::io::AsRawFd,
+{
+    use socket2::Socket;
+    use std::os::unix::prelude::{FromRawFd, IntoRawFd};
+
+    let fd = socket.as_raw_fd();
+
+    let sock = unsafe { Socket::from_raw_fd(fd) };
+    let result = sock.set_mark(mark);
+
+    sock.into_raw_fd();
+
+    result
 }
 
 fn trace_ip_packet(message: &str, packet: &[u8]) {
