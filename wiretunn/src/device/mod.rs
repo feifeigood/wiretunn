@@ -19,7 +19,7 @@ use boringtun::{
     x25519,
 };
 use dashmap::DashMap;
-use futures::{SinkExt, StreamExt};
+use futures::{FutureExt, SinkExt, StreamExt};
 
 use net_route::{Handle, Route};
 use parking_lot::RwLock;
@@ -130,6 +130,7 @@ impl WgDeviceBuilder {
             iface: packet_in,
             udp4: Default::default(),
             udp6: Default::default(),
+            use_connected_socket: config.use_connected_socket,
             peers: Default::default(),
             peers_by_ip: RwLock::new(AllowedIps::new()),
             peers_by_idx: Default::default(),
@@ -162,13 +163,13 @@ impl WgDeviceBuilder {
 
         let mut routes = vec![];
         for peer in config.wg_peers.iter() {
-            let pub_key = peer.public_key.clone();
-            let preshared_key = peer.preshared_key.clone();
-            let endpoint = peer.endpoint.clone();
+            let pub_key = peer.public_key;
+            let preshared_key = peer.preshared_key;
+            let endpoint = peer.endpoint;
             let allowed_ips = peer
                 .allowed_ips
                 .iter()
-                .map(|x| AllowedIP::from(x.clone()))
+                .map(|x| AllowedIP::from(*x))
                 .collect::<Vec<AllowedIP>>();
 
             // Add peer route
@@ -313,7 +314,6 @@ impl WgDevice {
     pub fn register_udp_handler(&mut self, udp: Arc<UdpSocket>) -> Result<(), Error> {
         let shutdown = self.shutdown_token.clone();
         let d = self.device_inner.clone();
-
         let mut recv_buf = [0u8; MAX_UDP_SIZE];
         let mut dst_buf = [0u8; MAX_UDP_SIZE];
 
@@ -324,14 +324,66 @@ impl WgDevice {
         );
 
         self.join_set.spawn(async move {
+            let mut inner_join_set = JoinSet::new();
             loop {
-                tokio::select! {
-                    Ok((n, addr)) = udp.recv_from(&mut recv_buf[..]) => {
-                        d.handle_udp_packet(&udp, addr, &recv_buf[..n], &mut dst_buf).await;
-                    }
+                let (n, addr) = tokio::select! {
+                    result = udp.recv_from(&mut recv_buf[..]) => match result {
+                        Ok((n, addr)) => (n, addr),
+                        Err(_) => continue,
+                    },
                     _ = shutdown.cancelled() => break,
+                };
+
+                if let Ok(Some(peer)) = d
+                    .handle_udp_packet(&udp, addr, &recv_buf[..n], &mut dst_buf)
+                    .await
+                {
+                    // This packet was OK, that means we want to create a connected socket for this peer
+                    let d = Arc::clone(&d);
+                    let shutdown = shutdown.clone();
+                    let peer_addr = addr.ip();
+                    let p = peer.lock().await;
+                    p.set_endpoint(addr);
+                    if d.use_connected_socket {
+                        if let Ok(sock) = p.connect_endpoint(
+                            d.listen_port,
+                            #[cfg(any(
+                                target_os = "android",
+                                target_os = "fuchsia",
+                                target_os = "linux"
+                            ))]
+                            d.fwmark,
+                        ) {
+                            let mut recv_buf = [0u8; MAX_UDP_SIZE];
+                            let mut dst_buf = [0u8; MAX_UDP_SIZE];
+                            let peer = Arc::clone(&peer);
+                            let udp = UdpSocket::from_std(sock.into()).unwrap();
+                            inner_join_set.spawn(async move {
+                                loop {
+                                    let n = tokio::select! {
+                                        result = udp.recv(&mut recv_buf) => match result {
+                                            Ok(n) => n,
+                                            Err(_) => break,
+                                        },
+                                        _ = shutdown.cancelled() => break,
+                                    };
+
+                                    d.handle_connect_udp_packet(
+                                        &udp,
+                                        &peer,
+                                        peer_addr,
+                                        &recv_buf[..n],
+                                        &mut dst_buf,
+                                    )
+                                    .await;
+                                }
+                            });
+                            reap_tasks(&mut inner_join_set);
+                        }
+                    }
                 }
             }
+
             Ok(())
         });
 
@@ -442,6 +494,8 @@ pub(super) struct WgDeviceInner {
     udp4: Option<Arc<UdpSocket>>,
     udp6: Option<Arc<UdpSocket>>,
 
+    use_connected_socket: bool,
+
     peers: DashMap<x25519::PublicKey, Arc<Mutex<Peer>>>,
     peers_by_ip: RwLock<AllowedIps<Arc<Mutex<Peer>>>>,
     peers_by_idx: DashMap<u32, Arc<Mutex<Peer>>>,
@@ -490,13 +544,55 @@ impl WgDeviceInner {
         Ok(())
     }
 
+    pub async fn handle_connect_udp_packet(
+        &self,
+        udp: &UdpSocket,
+        peer: &Arc<Mutex<Peer>>,
+        peer_addr: IpAddr,
+        packet: &[u8],
+        dst_buf: &mut [u8],
+    ) {
+        let mut flush = false;
+        let mut p = peer.lock().await;
+        match p
+            .tunnel
+            .decapsulate(Some(peer_addr), packet, &mut dst_buf[..])
+        {
+            TunnResult::Done => {}
+            TunnResult::Err(e) => error!("Decapsulate error {:?}", e),
+            TunnResult::WriteToNetwork(packet) => {
+                flush = true;
+                let _: Result<_, _> = udp.try_send(packet);
+            }
+            TunnResult::WriteToTunnelV4(packet, addr) => {
+                if p.is_allowed_ip(addr) {
+                    _ = self.iface.send(packet.to_vec()).await;
+                }
+            }
+            TunnResult::WriteToTunnelV6(packet, addr) => {
+                if p.is_allowed_ip(addr) {
+                    _ = self.iface.send(packet.to_vec()).await;
+                }
+            }
+        };
+
+        if flush {
+            // Flush pending queue
+            while let TunnResult::WriteToNetwork(packet) =
+                p.tunnel.decapsulate(None, &[], &mut dst_buf[..])
+            {
+                let _: Result<_, _> = udp.try_send(packet);
+            }
+        }
+    }
+
     pub async fn handle_udp_packet(
         &self,
         udp: &UdpSocket,
         addr: SocketAddr,
         packet: &[u8],
         dst_buf: &mut [u8],
-    ) {
+    ) -> Result<Option<Arc<Mutex<Peer>>>, Error> {
         // The rate limiter initially checks mac1 and mac2, and optionally asks to send a cookie
         let parsed_packet = match self.rate_limiter.read().as_ref().unwrap().verify_packet(
             Some(addr.ip()),
@@ -506,9 +602,9 @@ impl WgDeviceInner {
             Ok(packet) => packet,
             Err(TunnResult::WriteToNetwork(cookie)) => {
                 let _: Result<_, _> = udp.try_send_to(cookie, addr);
-                return;
+                return Ok(None);
             }
-            Err(_) => return,
+            Err(_) => return Ok(None),
         };
 
         let peer = match &parsed_packet {
@@ -525,7 +621,7 @@ impl WgDeviceInner {
         };
 
         let peer = match peer {
-            None => return,
+            None => return Ok(None),
             Some(peer) => peer,
         };
 
@@ -538,7 +634,7 @@ impl WgDeviceInner {
             .handle_verified_packet(parsed_packet, &mut dst_buf[..])
         {
             TunnResult::Done => {}
-            TunnResult::Err(_) => return,
+            TunnResult::Err(_) => return Ok(None),
             TunnResult::WriteToNetwork(packet) => {
                 flush = true;
                 let _: Result<_, _> = udp.try_send_to(packet, addr);
@@ -564,6 +660,8 @@ impl WgDeviceInner {
                 let _: Result<_, _> = udp.try_send_to(packet, addr);
             }
         }
+
+        Ok(Some(Arc::clone(&peer)))
     }
 
     pub async fn handle_iface_packet(&self, packet: &[u8], dst_buf: &mut [u8]) {
@@ -574,7 +672,7 @@ impl WgDeviceInner {
             None => return,
         };
 
-        let peer = match self.peers_by_ip.read().find(dst_addr).cloned() {
+        let peer = match self.find_peer_by_ip(dst_addr) {
             Some(peer) => peer,
             None => return,
         };
@@ -718,7 +816,7 @@ impl WgDeviceInner {
     }
 
     pub fn find_peer_by_ip(&self, addr: IpAddr) -> Option<Arc<Mutex<Peer>>> {
-        self.peers_by_ip.read().find(addr).map(|x| x.clone())
+        self.peers_by_ip.read().find(addr).cloned()
     }
 
     pub fn find_peer_by_idx(&self, idx: &u32) -> Option<Arc<Mutex<Peer>>> {
@@ -806,6 +904,14 @@ fn ifname_to_index(name: &str) -> Option<u32> {
     } else {
         None
     }
+}
+
+/// Reap finished tasks from a `JoinSet`, without awaiting or blocking.
+fn reap_tasks(join_set: &mut JoinSet<()>) {
+    while FutureExt::now_or_never(join_set.join_next())
+        .flatten()
+        .is_some()
+    {}
 }
 
 fn trace_ip_packet(message: &str, packet: &[u8]) {
