@@ -31,7 +31,7 @@ pub struct AllowedIP {
 
 impl From<IpNet> for AllowedIP {
     fn from(ip: IpNet) -> Self {
-        let (addr, cidr) = (ip.addr().into(), ip.prefix_len());
+        let (addr, cidr) = (ip.addr(), ip.prefix_len());
         AllowedIP { addr, cidr }
     }
 }
@@ -79,8 +79,8 @@ impl Peer {
         let mut endpoint = self.endpoint.write();
         if endpoint.addr != Some(addr) {
             // We only need to update the endpoint if it differs from the current one
-            if let Some(_conn) = endpoint.conn.take() {
-                // conn.shutdown(Shutdown::Both).unwrap();
+            if let Some(conn) = endpoint.conn.take() {
+                conn.shutdown(Shutdown::Both).unwrap();
             }
 
             endpoint.addr = Some(addr);

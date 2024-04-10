@@ -18,6 +18,7 @@ pub struct Opts {
     #[arg(short, long, value_name = "FILE")]
     config: PathBuf,
 
+    /// Sets log level
     #[arg(
         long,
         value_name = "LOG_LEVEL",
