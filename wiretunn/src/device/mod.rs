@@ -345,7 +345,15 @@ impl WgDevice {
                     let p = peer.lock().await;
                     p.set_endpoint(addr);
                     if d.use_connected_socket {
-                        if let Ok(sock) = p.connect_endpoint(d.listen_port) {
+                        if let Ok(sock) = p.connect_endpoint(
+                            d.listen_port,
+                            #[cfg(any(
+                                target_os = "android",
+                                target_os = "fuchsia",
+                                target_os = "linux"
+                            ))]
+                            d.fwmark,
+                        ) {
                             let mut recv_buf = [0u8; MAX_UDP_SIZE];
                             let mut dst_buf = [0u8; MAX_UDP_SIZE];
                             let peer = Arc::clone(&peer);

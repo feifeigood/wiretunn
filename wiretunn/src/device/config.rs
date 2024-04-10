@@ -13,6 +13,7 @@ pub struct WgDeviceConfig {
     #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
     pub fwmark: Option<u32>,
     pub mtu: Option<i32>,
+    #[serde(default)]
     pub use_connected_socket: bool,
     #[serde(rename = "peer")]
     pub wg_peers: Vec<WgPeerConfig>,
