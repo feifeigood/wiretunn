@@ -17,7 +17,6 @@ serde_with = "3.7.0"
 toml = "0.8.12"
 base64 = "0.22.0"
 bytes = "1.6.0"
-derive_builder = "0.20.0"
 num_cpus = { version = "1", optional = true }
 rand_core = { version = "0.6.3", features = ["getrandom"] }
 parking_lot = "0.12.1"
@@ -26,7 +25,7 @@ ipnet = { version = "2.9.0", features = ["serde"] }
 ip_network = "0.4.1"
 ip_network_table = "0.2.0"
 net-route = "0.4.2"
-tun = { version = "0.6.1", features = ["async"] }
+tun2 = { version = "1", features = ["async"] }
 socket2 = { version = "0.5.6", features = ["all"] }
 futures = { version = "0.3.30", features = ["async-await"] }
 futures-util = { version = "0.3.30", features = ["sink"] }
@@ -54,6 +53,12 @@ smoltcp = { version = "0.11", default-features = false, features = [
 
 tracing = { workspace = true }
 boringtun = { workspace = true }
+
+
+[target.'cfg(target_os = "windows")'.dependencies]
+wintun = { version = "0.4.0", features = ["panic_on_unsent_packets"] }
+blake2 = "0.10.6"
+unicode-normalization = "0.1.23"
 
 [lib]
 crate-type = ["staticlib", "cdylib", "rlib"]

@@ -2,8 +2,6 @@ mod allowed_ips;
 mod config;
 mod peer;
 
-#[cfg(unix)]
-use std::os::unix::io::RawFd;
 use std::{
     io,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
@@ -19,115 +17,51 @@ use boringtun::{
     x25519,
 };
 use dashmap::DashMap;
-use futures::{FutureExt, SinkExt, StreamExt};
+use futures::FutureExt;
 
-use net_route::{Handle, Route};
 use parking_lot::RwLock;
 use rand_core::{OsRng, RngCore};
 use socket2::{Domain, Protocol, Type};
 use tokio::{
     net::UdpSocket,
     sync::{
-        mpsc::{Receiver, Sender},
+        mpsc::{UnboundedReceiver, UnboundedSender},
         Mutex,
     },
-    task::{JoinError, JoinSet},
+    task::JoinSet,
     time,
 };
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, trace, warn, Level};
-use tun::{AsyncDevice, Configuration as TunConfiguration, Device as _, TunPacket};
+use tracing::*;
 
 use allowed_ips::AllowedIps;
 use peer::{AllowedIP, Peer};
 
 pub use config::WgDeviceConfig;
 
+use crate::{tun, Error};
+
 const HANDSHAKE_RATE_LIMIT: u64 = 100; // The number of handshakes per second we can tolerate before using cookies
 
 const MAX_UDP_SIZE: usize = (1 << 16) - 1;
 
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error("i/o error: {0}")]
-    IoError(#[from] io::Error),
-    #[error("{0}")]
-    Socket(io::Error),
-    #[error("{0}")]
-    Connect(String),
-    #[error("create tun error: {0}")]
-    TunError(#[from] tun::Error),
-    #[error("spawn error: {0}")]
-    JoinError(#[from] JoinError),
-    #[error("{0}")]
-    IOCtl(io::Error),
-}
-
 #[derive(Default, Debug)]
-pub struct WgDeviceBuilder {
-    name: Option<String>,
-    #[cfg(unix)]
-    raw_fd: Option<RawFd>,
-}
+pub struct WgDeviceBuilder {}
 
 impl WgDeviceBuilder {
-    /// Set the device name
-    pub fn name(&mut self, name: &str) -> &mut WgDeviceBuilder {
-        self.name = Some(name.into());
-        self
-    }
-
-    /// Set the tun fd only linux
-    #[cfg(unix)]
-    pub fn file_descriptor(&mut self, raw_fd: RawFd) -> &mut WgDeviceBuilder {
-        self.raw_fd = Some(raw_fd);
-        self
-    }
-
-    pub async fn build(&self, config: WgDeviceConfig) -> Result<WgDevice, Error> {
-        let mut tun_config = TunConfiguration::default();
-        // Using L3 device for WireGuard
-        tun_config.layer(tun::Layer::L3).up();
-
-        #[cfg(target_os = "linux")]
-        tun_config.platform(|tun_config| {
-            // IFF_NO_PI preventing excessive buffer reallocating
-            tun_config.packet_information(false);
-        });
-
-        #[cfg(unix)]
-        if let Some(fd) = self.raw_fd {
-            tun_config.raw_fd(fd);
-        }
-
-        // macos only support tun device name like utun[0-9]
-        #[cfg(not(target_os = "macos"))]
-        if let Some(name) = &self.name {
-            tun_config.name(name);
-        }
-
-        // Set the interface address, like `ifconfig` or `netsh`
-        tun_config.address(config.address.addr());
-        tun_config.destination(config.address.addr());
-        tun_config.netmask(config.address.netmask());
-
-        // Set the interface mtu
-        if let Some(mtu) = config.mtu {
-            tun_config.mtu(mtu);
-        };
-
-        // Create a tunnel device
-        let iface = tun::create_as_async(&tun_config)?;
-        let name = iface.get_ref().name()?;
-
-        let (packet_in, packet_out) = tokio::sync::mpsc::channel(128);
-
+    pub async fn build(
+        &self,
+        tun_device: tun::Tun,
+        config: WgDeviceConfig,
+    ) -> Result<WgDevice, Error> {
+        let name = tun_device.tun_name()?;
+        let (iface_input, iface_output) = tun_device.run()?;
         let mut device_inner = WgDeviceInner {
             key_pair: RwLock::new(Default::default()),
             listen_port: Default::default(),
             #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
             fwmark: Default::default(),
-            iface: packet_in,
+            iface: iface_input,
             udp4: Default::default(),
             udp6: Default::default(),
             use_connected_socket: config.use_connected_socket,
@@ -145,23 +79,6 @@ impl WgDeviceBuilder {
             device_inner.set_fwmark(mark).await?;
         }
 
-        let ifindex = {
-            cfg_if::cfg_if! {
-                if #[cfg(target_os = "macos")] {
-                    net_route::ifname_to_index(&name).ok_or(Error::IOCtl(io::Error::other(
-                        "No interface found for the index",
-                    )))?
-                } else if #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))] {
-                    ifname_to_index(&name).ok_or(Error::IOCtl(io::Error::other(
-                        "No interface found for the index",
-                    )))?
-                } else {
-                    unimplemented!()
-                }
-            }
-        };
-
-        let mut routes = vec![];
         for peer in config.wg_peers.iter() {
             let pub_key = peer.public_key;
             let preshared_key = peer.preshared_key;
@@ -171,11 +88,6 @@ impl WgDeviceBuilder {
                 .iter()
                 .map(|x| AllowedIP::from(*x))
                 .collect::<Vec<AllowedIP>>();
-
-            // Add peer route
-            peer.allowed_ips.iter().for_each(|ip| {
-                routes.push(Route::new(ip.addr(), ip.prefix_len()).with_ifindex(ifindex));
-            });
 
             device_inner
                 .update_peer(
@@ -190,35 +102,6 @@ impl WgDeviceBuilder {
                 .await;
         }
 
-        // If fd provide, that should set route by fd creator like VPNService or NetworkExtension
-        #[cfg(unix)]
-        if self.raw_fd.is_none() {
-            // Apply static route to WireGuard
-            let handle = Handle::new()?;
-            let exist_routes = handle.list().await?;
-            let add_routes = routes.iter_mut().filter(|r1| {
-                for r2 in exist_routes.iter() {
-                    if r1.destination.eq(&r2.destination)
-                        && r1.prefix.eq(&r2.prefix)
-                        && r1.ifindex.eq(&r2.ifindex)
-                    {
-                        debug!(
-                            "Route {}/{} -> via {:?} dev {:?} already exists",
-                            r2.destination, r2.prefix, r2.gateway, r2.ifindex,
-                        );
-                        return false;
-                    }
-                }
-                true
-            });
-
-            for route in add_routes.into_iter() {
-                if let Err(err) = handle.add(route).await {
-                    warn!("Route add error: {}", err);
-                }
-            }
-        }
-
         let mut device = WgDevice {
             config,
             name,
@@ -227,7 +110,7 @@ impl WgDeviceBuilder {
             shutdown_token: CancellationToken::new(),
         };
 
-        device.register_iface_handler(iface, packet_out)?;
+        device.register_iface_handler(iface_output)?;
         device.register_udp_handler(device.device_inner.udp4.clone().expect("Not connected"))?;
         device.register_udp_handler(device.device_inner.udp6.clone().expect("Not connected"))?;
         device.register_timers()?;
@@ -274,8 +157,7 @@ impl WgDevice {
 
     pub fn register_iface_handler(
         &mut self,
-        iface: AsyncDevice,
-        mut packet_in: Receiver<Vec<u8>>,
+        mut iface_output: UnboundedReceiver<Vec<u8>>,
     ) -> Result<(), Error> {
         // The iface_handler handles packets received from the WireGuard virtual network
         // interface. The flow is as follows:
@@ -287,20 +169,20 @@ impl WgDevice {
         let shutdown = self.shutdown_token.clone();
         let d = self.device_inner.clone();
 
-        let (mut iface_out, mut iface_in) = iface.into_framed().split();
-
         info!("WireGuard {} register interface handler", self.name);
 
         self.join_set.spawn(async move {
             loop {
                 tokio::select! {
-                    Some(Ok(packet)) = iface_in.next() => {
-                        d.handle_iface_packet(packet.get_bytes(), &mut dst_buf).await;
-                    }
-                    Some(packet) = packet_in.recv() => {
-                        if let Err(e) = iface_out.send(TunPacket::new(packet)).await {
-                            tracing::error!(message = "Sent IP packet error", error = ?e);
-                        }
+                    packet = iface_output.recv() => {
+                        let packet = match packet {
+                            Some(pkt) => pkt,
+                            None =>{
+                                trace!("tun device input channel closed");
+                                break
+                            }
+                        };
+                        d.handle_iface_packet(&packet, &mut dst_buf).await;
                     }
                     _ = shutdown.cancelled() => break,
                 }
@@ -477,7 +359,7 @@ async fn block_until_done(join_set: &mut JoinSet<Result<(), Error>>) -> Result<(
                     }
                 }
             }
-            Err(e) => return Err(Error::from(e)),
+            Err(e) => return Err(io::Error::other(e.to_string()).into()),
         }
     }
     out
@@ -490,7 +372,7 @@ pub(super) struct WgDeviceInner {
     #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
     fwmark: Option<u32>,
 
-    iface: Sender<Vec<u8>>,
+    iface: UnboundedSender<Vec<u8>>,
     udp4: Option<Arc<UdpSocket>>,
     udp6: Option<Arc<UdpSocket>>,
 
@@ -566,12 +448,12 @@ impl WgDeviceInner {
             }
             TunnResult::WriteToTunnelV4(packet, addr) => {
                 if p.is_allowed_ip(addr) {
-                    _ = self.iface.send(packet.to_vec()).await;
+                    _ = self.iface.send(packet.to_vec());
                 }
             }
             TunnResult::WriteToTunnelV6(packet, addr) => {
                 if p.is_allowed_ip(addr) {
-                    _ = self.iface.send(packet.to_vec()).await;
+                    _ = self.iface.send(packet.to_vec());
                 }
             }
         };
@@ -642,12 +524,12 @@ impl WgDeviceInner {
             TunnResult::WriteToTunnelV4(packet, addr) => {
                 if p.is_allowed_ip(addr) {
                     // TODO: avoid copy packet
-                    _ = self.iface.send(packet.to_vec()).await;
+                    _ = self.iface.send(packet.to_vec());
                 }
             }
             TunnResult::WriteToTunnelV6(packet, addr) => {
                 if p.is_allowed_ip(addr) {
-                    _ = self.iface.send(packet.to_vec()).await;
+                    _ = self.iface.send(packet.to_vec());
                 }
             }
         };
