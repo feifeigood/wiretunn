@@ -15,3 +15,17 @@ cfg_if! {
         pub use self::android::*;
     }
 }
+
+#[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+pub(crate) fn ifname_to_index(name: &str) -> Option<u32> {
+    use std::ffi::CString;
+
+    let ifname = CString::new(name).ok()?;
+    let ifindex = unsafe { libc::if_nametoindex(ifname.as_ptr()) };
+
+    if ifindex != 0 {
+        Some(ifindex)
+    } else {
+        None
+    }
+}
