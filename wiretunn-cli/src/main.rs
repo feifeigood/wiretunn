@@ -9,6 +9,7 @@ use tracing::{error, info, Level};
 use wiretunn::{
     device::{WgDevice, WgDeviceConfig},
     signal,
+    tun::{self, TunBuilder},
 };
 
 #[derive(Parser)]
@@ -55,8 +56,24 @@ async fn main() -> anyhow::Result<()> {
     let tracker = TaskTracker::new();
     let shutdown_token = CancellationToken::new();
 
+    #[allow(unused)]
     for (name, config) in config.wg_devices {
-        let mut wg_device = WgDevice::builder().name(&name).build(config).await?;
+        let mut tun_builder = TunBuilder::default();
+        #[cfg(not(target_os = "macos"))]
+        tun_builder.tun_name(&name);
+        tun_builder.address(config.address);
+        tun_builder.destination(config.address);
+        tun_builder.mtu(config.mtu.unwrap_or(1420) as _);
+
+        let mut tun_device = tun_builder.build().await?;
+        let mut routes = vec![];
+        for peer in config.wg_peers.iter() {
+            routes.extend_from_slice(&peer.allowed_ips);
+        }
+
+        tun::set_route_configuration(&mut tun_device, routes).await;
+
+        let mut wg_device = WgDevice::builder().build(tun_device, config).await?;
         let shutdown_token = shutdown_token.clone();
         tracker.spawn(async move {
             tokio::select! {

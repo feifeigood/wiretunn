@@ -5,7 +5,7 @@ use ipnet::IpNet;
 use parking_lot::RwLock;
 use socket2::{Domain, Protocol, Type};
 
-use crate::device::{allowed_ips::AllowedIps, Error};
+use crate::{device::allowed_ips::AllowedIps, Error};
 
 #[derive(Default, Debug)]
 pub struct Endpoint {
