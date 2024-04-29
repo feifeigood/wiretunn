@@ -3,7 +3,7 @@ mod config;
 mod peer;
 
 use std::{
-    io,
+    io::{self, Write},
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
     sync::Arc,
     time::Duration,
@@ -279,11 +279,9 @@ impl WgDevice {
         info!("WireGuard {} register timers", self.name);
 
         self.join_set.spawn(async move {
-            let mut dst_buf = [0u8;MAX_UDP_SIZE];
-            let mut rate_limiter_interval =
-                time::interval(Duration::from_secs(1));
-            let mut update_peer_interval =
-                time::interval(Duration::from_secs(25));
+            let mut dst_buf = [0u8; MAX_UDP_SIZE];
+            let mut rate_limiter_interval = time::interval(Duration::from_secs(1));
+            let mut update_peer_interval = time::interval(Duration::from_secs(25));
 
             loop {
                 tokio::select! {
@@ -295,6 +293,7 @@ impl WgDevice {
                     }
                     // Execute the timed function of every peer in the list
                     _ = update_peer_interval.tick() => {
+                        // TODO: tick for every peer with different interval
                         let peer_map = &d.peers;
 
                         let (udp4, udp6) = match (d.udp4.as_ref(), d.udp6.as_ref()) {
@@ -315,7 +314,7 @@ impl WgDevice {
                                 TunnResult::Err(WireGuardError::ConnectionExpired) => {
                                     p.shutdown_endpoint(); // close open udp socket
                                 }
-                                TunnResult::Err(e) => {tracing::error!(message = "Timer error", error = ?e)},
+                                TunnResult::Err(e) => {error!(message = "Timer error", error = ?e)},
                                 TunnResult::WriteToNetwork(packet) => {
                                     match endpoint_addr {
                                         SocketAddr::V4(_) => {
@@ -566,8 +565,11 @@ impl WgDeviceInner {
                 error!(message = "Encapsulate error", error = ?e)
             }
             TunnResult::WriteToNetwork(packet) => {
-                let endpoint = peer.endpoint_mut();
-                if let Some(addr @ SocketAddr::V4(_)) = endpoint.addr {
+                let mut endpoint = peer.endpoint_mut();
+                if let Some(conn) = endpoint.conn.as_mut() {
+                    // Prefer to send using the connected socket
+                    let _: Result<_, _> = conn.write(&packet);
+                } else if let Some(addr @ SocketAddr::V4(_)) = endpoint.addr {
                     let _: Result<_, _> = self.udp4.as_ref().unwrap().try_send_to(packet, addr);
                 } else if let Some(addr @ SocketAddr::V6(_)) = endpoint.addr {
                     let _: Result<_, _> = self.udp6.as_ref().unwrap().try_send_to(packet, addr);
