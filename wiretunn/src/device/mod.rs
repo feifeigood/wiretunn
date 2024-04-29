@@ -774,20 +774,6 @@ where
     result
 }
 
-#[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
-fn ifname_to_index(name: &str) -> Option<u32> {
-    use std::ffi::CString;
-
-    let ifname = CString::new(name).ok()?;
-    let ifindex = unsafe { libc::if_nametoindex(ifname.as_ptr()) };
-
-    if ifindex != 0 {
-        Some(ifindex)
-    } else {
-        None
-    }
-}
-
 /// Reap finished tasks from a `JoinSet`, without awaiting or blocking.
 fn reap_tasks(join_set: &mut JoinSet<()>) {
     while FutureExt::now_or_never(join_set.join_next())
