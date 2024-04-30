@@ -96,7 +96,7 @@ impl WgDeviceBuilder {
                     false,
                     endpoint,
                     allowed_ips.as_slice(),
-                    None,
+                    peer.persistent_keepalive,
                     preshared_key,
                 )
                 .await;
@@ -227,7 +227,8 @@ impl WgDevice {
                     let p = peer.lock().await;
                     p.set_endpoint(addr);
                     if d.use_connected_socket {
-                        if let Ok(sock) = p.connect_endpoint(
+                        trace!("Try to create a connected socket for peer {}", addr);
+                        match p.connect_endpoint(
                             d.listen_port,
                             #[cfg(any(
                                 target_os = "android",
@@ -236,31 +237,37 @@ impl WgDevice {
                             ))]
                             d.fwmark,
                         ) {
-                            let mut recv_buf = [0u8; MAX_UDP_SIZE];
-                            let mut dst_buf = [0u8; MAX_UDP_SIZE];
-                            let peer = Arc::clone(&peer);
-                            let udp = UdpSocket::from_std(sock.into()).unwrap();
-                            inner_join_set.spawn(async move {
-                                loop {
-                                    let n = tokio::select! {
-                                        result = udp.recv(&mut recv_buf) => match result {
-                                            Ok(n) => n,
-                                            Err(_) => break,
-                                        },
-                                        _ = shutdown.cancelled() => break,
-                                    };
+                            Ok(sock) => {
+                                let mut recv_buf = [0u8; MAX_UDP_SIZE];
+                                let mut dst_buf = [0u8; MAX_UDP_SIZE];
+                                let peer = Arc::clone(&peer);
+                                let udp = UdpSocket::from_std(sock.into()).unwrap();
+                                inner_join_set.spawn(async move {
+                                    loop {
+                                        let n = tokio::select! {
+                                            result = udp.recv(&mut recv_buf) => match result {
+                                                Ok(n) => n,
+                                                Err(_) => break,
+                                            },
+                                            _ = shutdown.cancelled() => break,
+                                        };
 
-                                    d.handle_connect_udp_packet(
-                                        &udp,
-                                        &peer,
-                                        peer_addr,
-                                        &recv_buf[..n],
-                                        &mut dst_buf,
-                                    )
-                                    .await;
-                                }
-                            });
-                            reap_tasks(&mut inner_join_set);
+                                        d.handle_connect_udp_packet(
+                                            &udp,
+                                            &peer,
+                                            peer_addr,
+                                            &recv_buf[..n],
+                                            &mut dst_buf,
+                                        )
+                                        .await;
+                                    }
+                                });
+
+                                reap_tasks(&mut inner_join_set);
+                            }
+                            Err(e) => {
+                                error!(message = format!("Create a connected socket for peer {} error", addr), error =?e);
+                            }
                         }
                     }
                 }
@@ -288,12 +295,12 @@ impl WgDevice {
                     // Reset the rate limiter every second give or take
                     _ = rate_limiter_interval.tick() => {
                         if let Some(r) = d.rate_limiter.read().as_ref() {
+                            trace!("Reset the rate limiter every second");
                             r.reset_count()
                         }
                     }
                     // Execute the timed function of every peer in the list
                     _ = update_peer_interval.tick() => {
-                        // TODO: tick for every peer with different interval
                         let peer_map = &d.peers;
 
                         let (udp4, udp6) = match (d.udp4.as_ref(), d.udp6.as_ref()) {
@@ -309,6 +316,7 @@ impl WgDevice {
                                 None => continue,
                             };
 
+                            trace!("Update peer {} timers", endpoint_addr);
                             match p.update_timers(&mut dst_buf[..]) {
                                 TunnResult::Done => {},
                                 TunnResult::Err(WireGuardError::ConnectionExpired) => {
