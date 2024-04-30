@@ -295,7 +295,6 @@ impl WgDevice {
                     // Reset the rate limiter every second give or take
                     _ = rate_limiter_interval.tick() => {
                         if let Some(r) = d.rate_limiter.read().as_ref() {
-                            trace!("Reset the rate limiter every second");
                             r.reset_count()
                         }
                     }
