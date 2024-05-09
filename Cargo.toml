@@ -5,4 +5,9 @@ members = ["wiretunn", "wiretunn-cli"]
 [workspace.dependencies]
 boringtun = { git = "https://github.com/feifeigood/boringtun.git", branch = "custom-tokio" }
 tracing = "0.1.40"
-tracing-subscriber = "0.3.18"
+tracing-subscriber = { version = "0.3.18", features = [
+    "std",
+    "fmt",
+    "env-filter",
+    "time",
+] }

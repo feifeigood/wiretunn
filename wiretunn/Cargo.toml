@@ -11,10 +11,16 @@ multicore = ["tokio/rt-multi-thread", "num_cpus"]
 [dependencies]
 thiserror = "1"
 cfg-if = "1.0.0"
+chrono = "0.4.38"
 libc = "0.2.153"
 serde = { version = "1.0.197", features = ["derive"] }
 serde_with = "3.7.0"
 toml = "0.8.12"
+byte-unit = { version = "5.1.4", features = [
+    "serde",
+    "std",
+    "byte",
+], default-features = false }
 byteorder = "1.5.0"
 base64 = "0.22.0"
 bytes = "1.6.0"
@@ -52,9 +58,10 @@ smoltcp = { version = "0.11", default-features = false, features = [
     "socket-tcp",
 ] }
 
+time = { version = "0.3.36", features = ["macros"] }
 tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 boringtun = { workspace = true }
-
 
 [target.'cfg(target_os = "windows")'.dependencies]
 wintun = { version = "0.4.0", features = ["panic_on_unsent_packets"] }
