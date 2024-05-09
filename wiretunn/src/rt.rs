@@ -26,8 +26,7 @@ pub fn build() -> Runtime {
     }
 
     match cores {
-        // `0` is unexpected, but it's a wild world out there.
-        0 | 1 => {
+        1 => {
             info!("Using single-threaded tokio runtime");
             Builder::new_current_thread()
                 .enable_all()
@@ -35,8 +34,14 @@ pub fn build() -> Runtime {
                 .build()
                 .expect("Failed to build basic runtime!")
         }
-        num_cpus => {
+        mut num_cpus => {
+            if num_cpus == 0 {
+                num_cpus = cpus;
+                cores = cpus;
+            }
+
             info!(%cores,"Using multi-threaded tokio runtime");
+
             Builder::new_multi_thread()
                 .enable_all()
                 .thread_name("wiretunn-runtime")

@@ -1,13 +1,12 @@
 use std::{env, io, path::Path, sync::OnceLock};
 
-use time::macros::format_description;
 use tracing::{
     dispatcher::{set_default, set_global_default},
     subscriber::DefaultGuard,
     Dispatch, Level,
 };
 use tracing_subscriber::{
-    fmt::{time::UtcTime, writer::MakeWriterExt, MakeWriter},
+    fmt::{time::ChronoLocal, writer::MakeWriterExt, MakeWriter},
     layer::SubscriberExt,
     EnvFilter,
 };
@@ -85,9 +84,7 @@ fn make_dispatch<W: for<'writer> MakeWriter<'writer> + 'static + Send + Sync>(
     filter: Option<&str>,
     writer: W,
 ) -> Dispatch {
-    let timer = UtcTime::new(format_description!(
-        "[year]-[month]-[day] [hour]:[minute]:[second]"
-    ));
+    let timer = ChronoLocal::new("%Y-%m-%d %H:%M:%S".to_string());
     let layer = tracing_subscriber::fmt::layer()
         .with_timer(timer)
         .with_writer(writer);

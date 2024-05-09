@@ -4,7 +4,7 @@ use boringtun::x25519;
 use ipnet::IpNet;
 use serde::Deserialize;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 pub struct WgDeviceConfig {
     #[serde(deserialize_with = "deserialize::wg_private_key")]
     pub private_key: x25519::StaticSecret,
@@ -19,7 +19,7 @@ pub struct WgDeviceConfig {
     pub wg_peers: Vec<WgPeerConfig>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 pub struct WgPeerConfig {
     #[serde(deserialize_with = "deserialize::wg_public_key")]
     pub public_key: x25519::PublicKey,
