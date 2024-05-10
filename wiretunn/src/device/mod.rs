@@ -733,7 +733,7 @@ impl Default for IndexLfsr {
 
 /// Sets the value for the `SO_MARK` option on this socket.
 #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
-fn set_socket_fwmark<S>(socket: &S, mark: u32) -> io::Result<()>
+fn set_socket_fwmark<S>(socket: &S, mark: u32) -> std::io::Result<()>
 where
     S: std::os::unix::io::AsRawFd,
 {
