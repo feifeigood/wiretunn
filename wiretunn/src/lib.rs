@@ -47,6 +47,7 @@ impl App {
                     None,
                     config.log_size(),
                     config.log_num(),
+                    #[cfg(unix)]
                     None,
                     config.log_config().console.unwrap_or_default(),
                 ))

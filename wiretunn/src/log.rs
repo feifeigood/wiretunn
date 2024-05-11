@@ -21,10 +21,16 @@ pub fn init_global_default<P: AsRef<Path>>(
     filter: Option<&str>,
     size: u64,
     num: u64,
-    mode: Option<u32>,
+    #[cfg(unix)] mode: Option<u32>,
     to_console: bool,
 ) -> DefaultGuard {
-    let file = MappedFile::open(path.as_ref(), size, Some(num as usize), mode);
+    let file = MappedFile::open(
+        path.as_ref(),
+        size,
+        Some(num as usize),
+        #[cfg(unix)]
+        mode,
+    );
 
     let writable = file
         .0
@@ -54,8 +60,14 @@ pub fn init_global_default<P: AsRef<Path>>(
         //     crate::hello_starting();
         // }
 
-        let file_writer =
-            MappedFile::open(path.as_ref(), size, Some(num as usize), mode).with_max_level(level);
+        let file_writer = MappedFile::open(
+            path.as_ref(),
+            size,
+            Some(num as usize),
+            #[cfg(unix)]
+            mode,
+        )
+        .with_max_level(level);
 
         make_dispatch(
             level.max(console_level),

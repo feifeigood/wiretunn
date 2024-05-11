@@ -16,12 +16,18 @@ pub struct MappedFile {
     path: PathBuf,
     file: Option<File>,
     len: u64,
+    #[cfg(unix)]
     mode: Option<u32>,
     peamble_bytes: Option<Box<[u8]>>,
 }
 
 impl MappedFile {
-    pub fn open<P: AsRef<Path>>(path: P, size: u64, num: Option<usize>, mode: Option<u32>) -> Self {
+    pub fn open<P: AsRef<Path>>(
+        path: P,
+        size: u64,
+        num: Option<usize>,
+        #[cfg(unix)] mode: Option<u32>,
+    ) -> Self {
         let path = path.as_ref().to_path_buf();
         Self {
             path,
@@ -29,6 +35,7 @@ impl MappedFile {
             num,
             file: None,
             len: 0,
+            #[cfg(unix)]
             mode,
             peamble_bytes: None,
         }
@@ -231,8 +238,19 @@ pub struct MutexMappedFile(pub Mutex<MappedFile>);
 
 impl MutexMappedFile {
     #[inline]
-    pub fn open<P: AsRef<Path>>(path: P, size: u64, num: Option<usize>, mode: Option<u32>) -> Self {
-        Self(Mutex::new(MappedFile::open(path, size, num, mode)))
+    pub fn open<P: AsRef<Path>>(
+        path: P,
+        size: u64,
+        num: Option<usize>,
+        #[cfg(unix)] mode: Option<u32>,
+    ) -> Self {
+        Self(Mutex::new(MappedFile::open(
+            path,
+            size,
+            num,
+            #[cfg(unix)]
+            mode,
+        )))
     }
 }
 
@@ -265,7 +283,13 @@ mod tests {
     pub fn test_write_file() -> io::Result<()> {
         let file_path = format!("./logs/abc-{:#x}.txt", Local::now().timestamp());
 
-        let mut file = MappedFile::open(file_path, 2, Some(3), Default::default());
+        let mut file = MappedFile::open(
+            file_path,
+            2,
+            Some(3),
+            #[cfg(unix)]
+            Default::default(),
+        );
         file.write_all(b"aa")?;
         assert_eq!(file.mapped_files().unwrap().len(), 1);
         file.write_all(b"bb")?;
