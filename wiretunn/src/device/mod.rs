@@ -1,9 +1,9 @@
-mod allowed_ips;
+pub mod allowed_ips;
 mod config;
-mod peer;
+pub mod peer;
 
 use std::{
-    io::{self, Write},
+    io::Write,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
     sync::Arc,
     time::Duration,
@@ -39,7 +39,7 @@ use peer::{AllowedIP, Peer};
 
 pub use config::WgDeviceConfig;
 
-use crate::{tun, Error};
+use crate::{tun::Tun, Error};
 
 const HANDSHAKE_RATE_LIMIT: u64 = 100; // The number of handshakes per second we can tolerate before using cookies
 
@@ -49,11 +49,7 @@ const MAX_UDP_SIZE: usize = (1 << 16) - 1;
 pub struct WgDeviceBuilder {}
 
 impl WgDeviceBuilder {
-    pub async fn build(
-        &self,
-        tun_device: tun::Tun,
-        config: WgDeviceConfig,
-    ) -> Result<WgDevice, Error> {
+    pub async fn build(&self, tun_device: Tun, config: WgDeviceConfig) -> Result<WgDevice, Error> {
         let name = tun_device.tun_name()?;
         let (iface_input, iface_output) = tun_device.run()?;
         let mut device_inner = WgDeviceInner {
@@ -147,14 +143,6 @@ impl WgDevice {
         self.name.as_str()
     }
 
-    pub async fn wait_until_exit(&mut self) -> Result<(), Error> {
-        block_until_done(&mut self.join_set).await
-    }
-
-    pub async fn shutdown_gracefully(&mut self) {
-        self.shutdown_token.cancel();
-    }
-
     pub fn register_iface_handler(
         &mut self,
         mut iface_output: UnboundedReceiver<Vec<u8>>,
@@ -169,7 +157,7 @@ impl WgDevice {
         let shutdown = self.shutdown_token.clone();
         let d = self.device_inner.clone();
 
-        info!("WireGuard {} register interface handler", self.name);
+        info!("Device {} register interface handler", self.name);
 
         self.join_set.spawn(async move {
             loop {
@@ -200,7 +188,7 @@ impl WgDevice {
         let mut dst_buf = [0u8; MAX_UDP_SIZE];
 
         info!(
-            "WireGuard {} register udp({}) handler",
+            "Device {} register udp({}) handler",
             self.name,
             udp.local_addr().unwrap()
         );
@@ -283,7 +271,7 @@ impl WgDevice {
         let shutdown = self.shutdown_token.clone();
         let d = self.device_inner.clone();
 
-        info!("WireGuard {} register timers", self.name);
+        info!("Device {} register timers", self.name);
 
         self.join_set.spawn(async move {
             let mut dst_buf = [0u8; MAX_UDP_SIZE];
@@ -344,31 +332,10 @@ impl WgDevice {
 
         Ok(())
     }
-}
 
-async fn block_until_done(join_set: &mut JoinSet<Result<(), Error>>) -> Result<(), Error> {
-    if join_set.is_empty() {
-        trace!("block_until_done called with no pending tasks");
-        return Ok(());
+    pub fn shutdown(&self) {
+        self.shutdown_token.cancel();
     }
-
-    // Now wait for all of the tasks to complete.
-    let mut out = Ok(());
-    while let Some(join_result) = join_set.join_next().await {
-        match join_result {
-            Ok(result) => {
-                match result {
-                    Ok(_) => (),
-                    Err(e) => {
-                        // Save the last error.
-                        out = Err(e);
-                    }
-                }
-            }
-            Err(e) => return Err(io::Error::other(e.to_string()).into()),
-        }
-    }
-    out
 }
 
 pub(super) struct WgDeviceInner {
@@ -766,7 +733,7 @@ impl Default for IndexLfsr {
 
 /// Sets the value for the `SO_MARK` option on this socket.
 #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
-fn set_socket_fwmark<S>(socket: &S, mark: u32) -> io::Result<()>
+fn set_socket_fwmark<S>(socket: &S, mark: u32) -> std::io::Result<()>
 where
     S: std::os::unix::io::AsRawFd,
 {
