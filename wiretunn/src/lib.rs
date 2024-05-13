@@ -2,10 +2,12 @@ use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Duration};
 
 use device::WgDevice;
 use tokio::sync::RwLock;
+use tokio_util::sync::CancellationToken;
 use tun::TunBuilder;
 
 use crate::config::Config;
 
+mod api;
 mod rt;
 
 pub mod config;
@@ -31,6 +33,7 @@ pub struct App {
     cfg: RwLock<Arc<Config>>,
     wg_interfaces: Arc<RwLock<HashMap<String, WgDevice>>>,
     guard: AppGuard,
+    shutdown_token: CancellationToken,
 }
 
 impl App {
@@ -60,6 +63,7 @@ impl App {
             cfg: RwLock::new(Arc::new(config)),
             wg_interfaces: Default::default(),
             guard,
+            shutdown_token: CancellationToken::new(),
         })
     }
 }
@@ -72,6 +76,7 @@ pub fn bootstrap(conf: Option<PathBuf>) -> Result<(), Error> {
 
     runtime.block_on(async {
         create_wg_devices(&app).await?;
+        create_controller_apis(&app).await?;
         Ok::<_, Error>(())
     })?;
 
@@ -125,6 +130,29 @@ async fn create_wg_devices(app: &Arc<App>) -> Result<(), Error> {
     Ok(())
 }
 
+async fn create_controller_apis(app: &Arc<App>) -> Result<(), Error> {
+    let cfg = app.cfg.read().await.clone();
+    let shutdown_token = app.shutdown_token.clone();
+
+    if let Some(external_controller) = cfg.external_controller() {
+        let listener = tokio::net::TcpListener::bind(external_controller).await?;
+        tracing::info!(
+            "Listening external controller apis on {}",
+            listener.local_addr().unwrap()
+        );
+
+        tokio::spawn(async move {
+            axum::serve(listener, api::router())
+                .with_graceful_shutdown(async move {
+                    shutdown_token.cancelled().await;
+                })
+                .await
+                .expect("Failed to create controller api");
+        });
+    }
+
+    Ok(())
+}
 struct AppGuard {
     log_guard: Option<tracing::dispatcher::DefaultGuard>,
 }

@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     fs,
+    net::SocketAddr,
     path::{Path, PathBuf},
 };
 
@@ -11,7 +12,7 @@ use crate::{device::WgDeviceConfig, Error};
 
 #[derive(Deserialize, Clone)]
 pub struct Config {
-    #[serde(rename = "log")]
+    external_controller: Option<SocketAddr>,
     log: LogConfig,
     #[serde(rename = "wireguard")]
     wg_devices: HashMap<String, WgDeviceConfig>,
@@ -49,6 +50,11 @@ impl Config {
         }
 
         Ok(toml::from_str(&fs::read_to_string(path)?)?)
+    }
+
+    #[inline]
+    pub fn external_controller(&self) -> Option<SocketAddr> {
+        self.external_controller
     }
 
     #[inline]
