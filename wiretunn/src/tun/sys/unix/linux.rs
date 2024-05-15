@@ -3,19 +3,11 @@ use std::io;
 use ipnet::IpNet;
 use net_route::{Handle, Route};
 
-use crate::tun::Tun;
-
 use super::ifname_to_index;
 
 /// Set platform specific route configuration
-pub async fn set_route_configuration(tun_device: &mut Tun, routes: Vec<IpNet>) -> io::Result<()> {
-    let ifindex = ifname_to_index(
-        &tun_device
-            .tun_name()
-            .map_err(|e| io::Error::other(e.to_string()))?,
-    );
-
-    let ifindex = match ifindex {
+pub async fn set_route_configuration(ifname: String, routes: Vec<IpNet>) -> io::Result<()> {
+    let ifindex = match ifname_to_index(&ifname) {
         Some(ifindex) => ifindex,
         None => return Err(io::Error::other("ifname_to_index fails")),
     };

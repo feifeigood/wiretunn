@@ -49,6 +49,20 @@ tokio = { version = "1.36.0", features = [
 ] }
 tokio-util = { version = "0.7.10", features = ["codec"] }
 axum = { version = "0.7.5" }
+tower = { version = "0.4.13", features = [
+    "util",
+    "timeout",
+    "load-shed",
+    "limit",
+] }
+tower-http = { version = "0.5.0", features = [
+    "add-extension",
+    "auth",
+    "compression-full",
+    "limit",
+    "trace",
+] }
+tower-layer = "0.3.2"
 
 smoltcp = { version = "0.11", default-features = false, features = [
     "std",

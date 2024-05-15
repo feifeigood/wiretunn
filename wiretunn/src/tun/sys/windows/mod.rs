@@ -4,14 +4,8 @@ use ipnet::IpNet;
 use net_route::{Handle, Route};
 use tracing::warn;
 
-use crate::tun::Tun;
-
 /// Set platform specific route configuration
-pub async fn set_route_configuration(tun_device: &mut Tun, routes: Vec<IpNet>) -> io::Result<()> {
-    let ifname = &tun_device
-        .tun_name()
-        .map_err(|e| io::Error::other(e.to_string()))?;
-
+pub async fn set_route_configuration(ifname: String, routes: Vec<IpNet>) -> io::Result<()> {
     for route in routes {
         let mut binding = Command::new("netsh");
         let mut cmd = binding
@@ -25,15 +19,6 @@ pub async fn set_route_configuration(tun_device: &mut Tun, routes: Vec<IpNet>) -
             .arg("route")
             .arg(format!("{}/{}", route.addr(), route.prefix_len()).as_str())
             .arg(format!("{}", ifname).as_str())
-            .arg(
-                format!(
-                    "{}",
-                    tun_device
-                        .address()
-                        .map_err(|e| io::Error::other(e.to_string()))?
-                )
-                .as_str(),
-            )
             .arg("store=active");
 
         tracing::debug!("{}", format!("{:?}", cmd).replace("\"", ""));

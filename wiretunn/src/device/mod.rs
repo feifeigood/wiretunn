@@ -1,5 +1,4 @@
 pub mod allowed_ips;
-mod config;
 pub mod peer;
 
 use std::{
@@ -19,6 +18,7 @@ use boringtun::{
 use dashmap::DashMap;
 use futures::FutureExt;
 
+use ipnet::IpNet;
 use parking_lot::RwLock;
 use rand_core::{OsRng, RngCore};
 use socket2::{Domain, Protocol, Type};
@@ -37,9 +37,7 @@ use tracing::*;
 use allowed_ips::AllowedIps;
 use peer::{AllowedIP, Peer};
 
-pub use config::WgDeviceConfig;
-
-use crate::{tun::Tun, Error};
+use crate::{config::WgDeviceConfig, tun::Tun, Error};
 
 const HANDSHAKE_RATE_LIMIT: u64 = 100; // The number of handshakes per second we can tolerate before using cookies
 
@@ -110,8 +108,6 @@ impl WgDeviceBuilder {
         device.register_udp_handler(device.device_inner.udp4.clone().expect("Not connected"))?;
         device.register_udp_handler(device.device_inner.udp6.clone().expect("Not connected"))?;
         device.register_timers()?;
-
-        // TODO: register peer update handler
 
         Ok(device)
     }
@@ -331,6 +327,27 @@ impl WgDevice {
         });
 
         Ok(())
+    }
+
+    pub async fn add_peer(
+        &mut self,
+        pub_key: x25519::PublicKey,
+        endpoint: Option<SocketAddr>,
+        allowed_ips: Vec<IpNet>,
+        keepalive: Option<u16>,
+        preshared_key: Option<[u8; 32]>,
+    ) {
+        // self.device_inner
+        //     .update_peer(
+        //         pub_key,
+        //         remove,
+        //         replace_ips,
+        //         endpoint,
+        //         allowed_ips,
+        //         keepalive,
+        //         preshared_key,
+        //     )
+        //     .await;
     }
 
     pub fn shutdown(&self) {
