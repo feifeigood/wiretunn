@@ -37,7 +37,11 @@ use tracing::*;
 use allowed_ips::AllowedIps;
 use peer::{AllowedIP, Peer};
 
-use crate::{config::WgDeviceConfig, tun::Tun, Error};
+use crate::{
+    config::{WgDeviceConfig, WgPeerConfig},
+    tun::{self, Tun},
+    Error,
+};
 
 const HANDSHAKE_RATE_LIMIT: u64 = 100; // The number of handshakes per second we can tolerate before using cookies
 
@@ -329,25 +333,53 @@ impl WgDevice {
         Ok(())
     }
 
-    pub async fn add_peer(
+    pub async fn set_peer(
         &mut self,
         pub_key: x25519::PublicKey,
+        remove: bool,
         endpoint: Option<SocketAddr>,
-        allowed_ips: Vec<IpNet>,
+        mut allowed_ips: Vec<IpNet>,
         keepalive: Option<u16>,
         preshared_key: Option<[u8; 32]>,
     ) {
-        // self.device_inner
-        //     .update_peer(
-        //         pub_key,
-        //         remove,
-        //         replace_ips,
-        //         endpoint,
-        //         allowed_ips,
-        //         keepalive,
-        //         preshared_key,
-        //     )
-        //     .await;
+        if remove {
+            self.device_inner.remove_peer(&pub_key).await;
+
+            if let Some(index) = self
+                .config
+                .wg_peers
+                .iter()
+                .position(|peer_conf| peer_conf.public_key.eq(&pub_key))
+            {
+                let peer_conf = self.config.wg_peers.remove(index);
+                allowed_ips = peer_conf.allowed_ips.clone();
+            }
+        } else {
+            self.device_inner
+                .update_peer(
+                    pub_key,
+                    false,
+                    false,
+                    endpoint,
+                    &allowed_ips
+                        .iter()
+                        .map(|x| AllowedIP::from(*x))
+                        .collect::<Vec<AllowedIP>>(),
+                    keepalive,
+                    preshared_key,
+                )
+                .await;
+
+            self.config.wg_peers.push(WgPeerConfig {
+                public_key: pub_key,
+                preshared_key,
+                allowed_ips: allowed_ips.clone(),
+                persistent_keepalive: keepalive,
+                endpoint,
+            });
+        }
+
+        _ = tun::set_route_configuration(self.name.to_owned(), allowed_ips, remove).await;
     }
 
     pub fn shutdown(&self) {
@@ -611,7 +643,7 @@ impl WgDeviceInner {
         Ok(())
     }
 
-    pub async fn remove_peer(&self, pub_key: &x25519::PublicKey) {
+    async fn remove_peer(&self, pub_key: &x25519::PublicKey) {
         if let Some((_, peer)) = self.peers.remove(pub_key) {
             // Found a peer to remove, now purge all references to it:
             {
@@ -680,6 +712,7 @@ impl WgDeviceInner {
         info!("Peer added");
     }
 
+    #[allow(unused)]
     pub fn clear_peers(&self) {
         self.peers.clear();
         self.peers_by_idx.clear();

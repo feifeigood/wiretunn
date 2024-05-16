@@ -5,7 +5,11 @@ use net_route::{Handle, Route};
 use tracing::warn;
 
 /// Set platform specific route configuration
-pub async fn set_route_configuration(ifname: String, routes: Vec<IpNet>) -> io::Result<()> {
+pub async fn set_route_configuration(
+    ifname: String,
+    routes: Vec<IpNet>,
+    remove: bool,
+) -> io::Result<()> {
     for route in routes {
         let mut binding = Command::new("netsh");
         let mut cmd = binding
@@ -15,7 +19,7 @@ pub async fn set_route_configuration(ifname: String, routes: Vec<IpNet>) -> io::
             } else {
                 "ipv6"
             })
-            .arg("add")
+            .arg(if remove { "delete" } else { "add" })
             .arg("route")
             .arg(format!("{}/{}", route.addr(), route.prefix_len()).as_str())
             .arg(format!("{}", ifname).as_str())

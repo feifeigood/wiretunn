@@ -1,7 +1,7 @@
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 
 use axum::{
-    extract::{FromRef, Path, State},
+    extract::{FromRef, Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -13,10 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::sync::RwLock;
 
-use crate::{
-    device::{peer::AllowedIP, WgDevice},
-    App,
-};
+use crate::{device::WgDevice, App};
 
 pub fn router(app: &App) -> Router {
     let state = Arc::new(AppState {
@@ -35,7 +32,10 @@ pub fn router(app: &App) -> Router {
                 )
             }),
         )
-        .route("/wg/:wg_name/peer", post(create_wg_peer))
+        .route(
+            "/wg/:wg_name/peer",
+            post(create_wg_peer).delete(remove_wg_peer),
+        )
         .with_state(state)
 }
 
@@ -78,10 +78,14 @@ struct WgPeer {
         deserialize_with = "crate::config::deserialize::wg_preshared_key"
     )]
     preshared_key: Option<[u8; 32]>,
-    #[serde(deserialize_with = "crate::config::deserialize::wg_allowed_ips")]
+    #[serde(
+        default = "Vec::new",
+        deserialize_with = "crate::config::deserialize::wg_allowed_ips"
+    )]
     allowed_ips: Vec<IpNet>,
-    persistent_keepalive: Option<u16>,
-    #[serde(deserialize_with = "crate::config::deserialize::wg_endpoint")]
+    #[serde(default, rename = "persistent_keepalive")]
+    keepalive: Option<u16>,
+    #[serde(default, deserialize_with = "crate::config::deserialize::wg_endpoint")]
     endpoint: Option<SocketAddr>,
 }
 
@@ -92,29 +96,54 @@ async fn create_wg_peer(
 ) -> Response {
     match wg_device.devices.write().await.get_mut(&wg_name) {
         Some(device) => {
-            let allowed_ips = wg_peer
-                .allowed_ips
-                .iter()
-                .map(|x| AllowedIP::from(*x))
-                .collect::<Vec<AllowedIP>>();
-
-            // device
-            //     .update_peer(
-            //         wg_peer.public_key,
-            //         false,
-            //         false,
-            //         wg_peer.endpoint,
-            //         &allowed_ips,
-            //         wg_peer.persistent_keepalive,
-            //         wg_peer.preshared_key,
-            //     )
-            //     .await;
-
+            device
+                .set_peer(
+                    wg_peer.public_key,
+                    false,
+                    wg_peer.endpoint,
+                    wg_peer.allowed_ips,
+                    wg_peer.keepalive,
+                    wg_peer.preshared_key,
+                )
+                .await;
             StatusCode::NO_CONTENT.into_response()
         }
         None => (
             StatusCode::BAD_REQUEST,
-            Json(HTTPError::new(&format!("can't find device: {}", wg_name))),
+            Json(HTTPError::new(&format!(
+                "can't find wireguard device: {}",
+                wg_name
+            ))),
+        )
+            .into_response(),
+    }
+}
+
+async fn remove_wg_peer(
+    State(wg_device): State<WgDeviceState>,
+    Path(wg_name): Path<String>,
+    Query(wg_peer): Query<WgPeer>,
+) -> Response {
+    match wg_device.devices.write().await.get_mut(&wg_name) {
+        Some(device) => {
+            device
+                .set_peer(
+                    wg_peer.public_key,
+                    true,
+                    None,
+                    Default::default(),
+                    None,
+                    None,
+                )
+                .await;
+            StatusCode::NO_CONTENT.into_response()
+        }
+        None => (
+            StatusCode::BAD_REQUEST,
+            Json(HTTPError::new(&format!(
+                "can't find wireguard device: {}",
+                wg_name
+            ))),
         )
             .into_response(),
     }

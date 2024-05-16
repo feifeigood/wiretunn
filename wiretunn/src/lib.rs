@@ -118,7 +118,7 @@ async fn create_wg_devices(app: &Arc<App>) -> Result<(), Error> {
             routes.extend_from_slice(&peer.allowed_ips);
         }
 
-        _ = tun::set_route_configuration(tun_device.tun_name()?, routes).await;
+        _ = tun::set_route_configuration(tun_device.tun_name()?, routes, false).await;
         let wg_device = WgDevice::builder()
             .build(tun_device, device_config.clone())
             .await?;
