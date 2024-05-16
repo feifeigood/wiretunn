@@ -4,7 +4,7 @@ use axum::{
     extract::{FromRef, Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{any, get, post},
     Json, Router,
 };
 use boringtun::x25519::PublicKey;
@@ -23,6 +23,10 @@ pub fn router(app: &App) -> Router {
     });
 
     Router::new()
+        .route(
+            "/",
+            any(|| async { (StatusCode::OK, Json(json!({"hello":"Wiretunn"}))) }),
+        )
         .route(
             "/version",
             get(|| async {
