@@ -355,6 +355,11 @@ impl WgDevice {
                 allowed_ips = peer_conf.allowed_ips.clone();
             }
         } else {
+            if self.device_inner.find_peer(&pub_key).is_some() {
+                warn!("Peer already exists");
+                return;
+            }
+
             self.device_inner
                 .update_peer(
                     pub_key,
