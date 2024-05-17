@@ -2,9 +2,15 @@ pub mod allowed_ips;
 pub mod peer;
 
 use std::{
-    io::Write,
+    io,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
-    sync::Arc,
+    ops::{Deref, DerefMut},
+    pin::Pin,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    task::{Context, Poll},
     time::Duration,
 };
 
@@ -16,13 +22,14 @@ use boringtun::{
     x25519,
 };
 use dashmap::DashMap;
-use futures::FutureExt;
+use futures::{ready, FutureExt};
 
 use ipnet::IpNet;
 use parking_lot::RwLock;
 use rand_core::{OsRng, RngCore};
 use socket2::{Domain, Protocol, Type};
 use tokio::{
+    io::ReadBuf,
     net::UdpSocket,
     sync::{
         mpsc::{UnboundedReceiver, UnboundedSender},
@@ -225,11 +232,10 @@ impl WgDevice {
                             ))]
                             d.fwmark,
                         ) {
-                            Ok(sock) => {
+                            Ok(udp) => {
                                 let mut recv_buf = [0u8; MAX_UDP_SIZE];
                                 let mut dst_buf = [0u8; MAX_UDP_SIZE];
                                 let peer = Arc::clone(&peer);
-                                let udp = UdpSocket::from_std(sock.into()).unwrap();
                                 inner_join_set.spawn(async move {
                                     loop {
                                         let n = tokio::select! {
@@ -455,7 +461,7 @@ impl WgDeviceInner {
 
     pub async fn handle_connect_udp_packet(
         &self,
-        udp: &UdpSocket,
+        udp: &ConnectUdpSocket,
         peer: &Arc<Mutex<Peer>>,
         peer_addr: IpAddr,
         packet: &[u8],
@@ -596,7 +602,7 @@ impl WgDeviceInner {
                 let mut endpoint = peer.endpoint_mut();
                 if let Some(conn) = endpoint.conn.as_mut() {
                     // Prefer to send using the connected socket
-                    let _: Result<_, _> = conn.write(&packet);
+                    let _: Result<_, _> = conn.try_send(packet);
                 } else if let Some(addr @ SocketAddr::V4(_)) = endpoint.addr {
                     let _: Result<_, _> = self.udp4.as_ref().unwrap().try_send_to(packet, addr);
                 } else if let Some(addr @ SocketAddr::V6(_)) = endpoint.addr {
@@ -830,5 +836,112 @@ fn trace_ip_packet(message: &str, packet: &[u8]) {
             ),
             _ => {}
         }
+    }
+}
+
+/// Wrappers for connected `UdpSocket`
+#[derive(Debug)]
+#[pin_project::pin_project(PinnedDrop)]
+pub struct ConnectUdpSocket {
+    #[pin]
+    socket: UdpSocket,
+    running: AtomicBool,
+}
+
+impl ConnectUdpSocket {
+    pub fn shutdown(&self) {
+        self.running.store(false, Ordering::Relaxed);
+    }
+
+    /// Wrapper of `UdpSocket::poll_send`
+    pub fn poll_send(&self, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
+        if self.running.load(Ordering::Relaxed) {
+            return self.socket.poll_send(cx, buf);
+        }
+
+        return Err(io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "connect udp socket already closed",
+        ))
+        .into();
+    }
+
+    /// Wrapper of `UdpSocket::poll_send_to`
+    #[inline]
+    pub async fn send(&self, buf: &[u8]) -> io::Result<usize> {
+        if self.running.load(Ordering::Relaxed) {
+            return self.socket.send(buf).await;
+        }
+
+        return Err(io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "connect udp socket already closed",
+        ));
+    }
+
+    /// Wrapper of `UdpSocket::poll_recv`
+    #[inline]
+    pub fn poll_recv(&self, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
+        if self.running.load(Ordering::Relaxed) {
+            ready!(self.socket.poll_recv(cx, buf))?;
+            return Ok(()).into();
+        }
+
+        return Err(io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "connect udp socket already closed",
+        ))
+        .into();
+    }
+
+    /// Wrapper of `UdpSocket::recv`
+    #[inline]
+    pub async fn recv(&self, buf: &mut [u8]) -> io::Result<usize> {
+        if self.running.load(Ordering::Relaxed) {
+            let n = self.socket.recv(buf).await?;
+            return Ok(n);
+        }
+
+        return Err(io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "connect udp socket already closed",
+        ));
+    }
+}
+
+#[pin_project::pinned_drop]
+impl PinnedDrop for ConnectUdpSocket {
+    fn drop(self: Pin<&mut Self>) {
+        debug!("Drop a connected peer socket");
+    }
+}
+
+impl Deref for ConnectUdpSocket {
+    type Target = tokio::net::UdpSocket;
+
+    fn deref(&self) -> &Self::Target {
+        &self.socket
+    }
+}
+
+impl DerefMut for ConnectUdpSocket {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.socket
+    }
+}
+
+impl From<tokio::net::UdpSocket> for ConnectUdpSocket {
+    fn from(socket: tokio::net::UdpSocket) -> Self {
+        ConnectUdpSocket {
+            socket,
+            running: AtomicBool::new(true),
+        }
+    }
+}
+
+#[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+impl std::os::unix::io::AsRawFd for ConnectUdpSocket {
+    fn as_raw_fd(&self) -> std::os::unix::prelude::RawFd {
+        self.socket.as_raw_fd()
     }
 }

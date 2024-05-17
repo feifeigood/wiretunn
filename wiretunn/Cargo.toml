@@ -28,6 +28,7 @@ bytes = "1.6.0"
 num_cpus = { version = "1", optional = true }
 rand_core = { version = "0.6.3", features = ["getrandom"] }
 parking_lot = "0.12.1"
+pin-project = "1"
 dashmap = "5.5.3"
 ipnet = { version = "2.9.0", features = ["serde"] }
 ip_network = "0.4.1"
