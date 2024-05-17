@@ -64,6 +64,7 @@ impl MappedFile {
         self.path.exists()
     }
 
+    #[allow(clippy::len_without_is_empty)]
     #[inline]
     pub fn len(&self) -> u64 {
         if self.len > 0 || self.file.is_some() {

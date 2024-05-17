@@ -358,7 +358,7 @@ impl WgDevice {
                 .position(|peer_conf| peer_conf.public_key.eq(&pub_key))
             {
                 let peer_conf = self.config.wg_peers.remove(index);
-                allowed_ips = peer_conf.allowed_ips.clone();
+                allowed_ips.clone_from(&peer_conf.allowed_ips);
             }
         } else {
             if self.device_inner.find_peer(&pub_key).is_some() {
@@ -859,11 +859,11 @@ impl ConnectUdpSocket {
             return self.socket.poll_send(cx, buf);
         }
 
-        return Err(io::Error::new(
+        Err(io::Error::new(
             io::ErrorKind::BrokenPipe,
             "connect udp socket already closed",
         ))
-        .into();
+        .into()
     }
 
     /// Wrapper of `UdpSocket::poll_send_to`
@@ -873,10 +873,10 @@ impl ConnectUdpSocket {
             return self.socket.send(buf).await;
         }
 
-        return Err(io::Error::new(
+        Err(io::Error::new(
             io::ErrorKind::BrokenPipe,
             "connect udp socket already closed",
-        ));
+        ))
     }
 
     /// Wrapper of `UdpSocket::poll_recv`
@@ -887,11 +887,11 @@ impl ConnectUdpSocket {
             return Ok(()).into();
         }
 
-        return Err(io::Error::new(
+        Err(io::Error::new(
             io::ErrorKind::BrokenPipe,
             "connect udp socket already closed",
         ))
-        .into();
+        .into()
     }
 
     /// Wrapper of `UdpSocket::recv`
@@ -902,10 +902,10 @@ impl ConnectUdpSocket {
             return Ok(n);
         }
 
-        return Err(io::Error::new(
+        Err(io::Error::new(
             io::ErrorKind::BrokenPipe,
             "connect udp socket already closed",
-        ));
+        ))
     }
 }
 

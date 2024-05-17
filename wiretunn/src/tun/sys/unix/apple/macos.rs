@@ -29,19 +29,17 @@ pub async fn set_route_configuration(
                     e
                 );
             }
-        } else {
-            if let Err(e) = handle
-                .add(&Route::new(route.addr(), route.prefix_len()).with_ifindex(ifindex))
-                .await
-            {
-                tracing::warn!(
-                    "route add {}/{} ifindex: {}, error: {}",
-                    route.addr(),
-                    route.prefix_len(),
-                    ifindex,
-                    e
-                );
-            }
+        } else if let Err(e) = handle
+            .add(&Route::new(route.addr(), route.prefix_len()).with_ifindex(ifindex))
+            .await
+        {
+            tracing::warn!(
+                "route add {}/{} ifindex: {}, error: {}",
+                route.addr(),
+                route.prefix_len(),
+                ifindex,
+                e
+            );
         }
     }
 
