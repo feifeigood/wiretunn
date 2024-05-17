@@ -2,10 +2,12 @@ use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Duration};
 
 use device::WgDevice;
 use tokio::sync::RwLock;
+use tokio_util::sync::CancellationToken;
 use tun::TunBuilder;
 
 use crate::config::Config;
 
+mod api;
 mod rt;
 
 pub mod config;
@@ -29,8 +31,11 @@ pub enum Error {
 
 pub struct App {
     cfg: RwLock<Arc<Config>>,
-    wg_interfaces: Arc<RwLock<HashMap<String, WgDevice>>>,
+    wg_devices: Arc<RwLock<HashMap<String, WgDevice>>>,
+
+    #[allow(unused)]
     guard: AppGuard,
+    shutdown_token: CancellationToken,
 }
 
 impl App {
@@ -58,8 +63,9 @@ impl App {
 
         Ok(App {
             cfg: RwLock::new(Arc::new(config)),
-            wg_interfaces: Default::default(),
+            wg_devices: Default::default(),
             guard,
+            shutdown_token: CancellationToken::new(),
         })
     }
 }
@@ -72,6 +78,7 @@ pub fn bootstrap(conf: Option<PathBuf>) -> Result<(), Error> {
 
     runtime.block_on(async {
         create_wg_devices(&app).await?;
+        create_controller_apis(&app).await?;
         Ok::<_, Error>(())
     })?;
 
@@ -79,7 +86,7 @@ pub fn bootstrap(conf: Option<PathBuf>) -> Result<(), Error> {
         signal::shutdown().await;
 
         // close all wireguard device
-        app.wg_interfaces
+        app.wg_devices
             .write()
             .await
             .iter()
@@ -94,7 +101,7 @@ pub fn bootstrap(conf: Option<PathBuf>) -> Result<(), Error> {
 async fn create_wg_devices(app: &Arc<App>) -> Result<(), Error> {
     let cfg = app.cfg.read().await.clone();
 
-    let wg_interfaces = app.wg_interfaces.clone();
+    let wg_devices = app.wg_devices.clone();
 
     for (device_name, device_config) in cfg.wg_devices() {
         let mut tun_builder = TunBuilder::default();
@@ -105,18 +112,18 @@ async fn create_wg_devices(app: &Arc<App>) -> Result<(), Error> {
         // https://gist.github.com/nitred/f16850ca48c48c79bf422e90ee5b9d95#file-peer_mtu_vs_bandwidth-png
         tun_builder.mtu(device_config.mtu.unwrap_or(1420) as _);
 
-        let mut tun_device = tun_builder.build().await?;
+        let tun_device = tun_builder.build().await?;
         let mut routes = vec![];
         for peer in device_config.wg_peers.iter() {
             routes.extend_from_slice(&peer.allowed_ips);
         }
 
-        _ = tun::set_route_configuration(&mut tun_device, routes).await;
+        _ = tun::set_route_configuration(tun_device.tun_name()?, routes, false).await;
         let wg_device = WgDevice::builder()
             .build(tun_device, device_config.clone())
             .await?;
 
-        wg_interfaces
+        wg_devices
             .write()
             .await
             .insert(device_name.into(), wg_device);
@@ -125,6 +132,32 @@ async fn create_wg_devices(app: &Arc<App>) -> Result<(), Error> {
     Ok(())
 }
 
+async fn create_controller_apis(app: &Arc<App>) -> Result<(), Error> {
+    let cfg = app.cfg.read().await.clone();
+    let shutdown_token = app.shutdown_token.clone();
+    let api = api::router(app);
+
+    if let Some(external_controller) = cfg.external_controller() {
+        let listener = tokio::net::TcpListener::bind(external_controller).await?;
+        tracing::info!(
+            "Listening external controller apis on {}",
+            listener.local_addr().unwrap()
+        );
+
+        tokio::spawn(async move {
+            axum::serve(listener, api)
+                .with_graceful_shutdown(async move {
+                    shutdown_token.cancelled().await;
+                })
+                .await
+                .expect("Failed to create controller api");
+        });
+    }
+
+    Ok(())
+}
+
+#[allow(unused)]
 struct AppGuard {
     log_guard: Option<tracing::dispatcher::DefaultGuard>,
 }
