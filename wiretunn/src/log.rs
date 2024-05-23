@@ -99,6 +99,7 @@ fn make_dispatch<W: for<'writer> MakeWriter<'writer> + 'static + Send + Sync>(
     let timer = ChronoLocal::new("%Y-%m-%d %H:%M:%S".to_string());
     let layer = tracing_subscriber::fmt::layer()
         .with_timer(timer)
+        .with_ansi(false)
         .with_writer(writer);
 
     Dispatch::from(
