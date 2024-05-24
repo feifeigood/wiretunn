@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["wiretunn", "wiretunn-cli"]
+members = ["wiretunn", "wiretunn-cli", "wiretunn-ffi"]
 
 [workspace.dependencies]
 boringtun = { git = "https://github.com/feifeigood/boringtun.git", branch = "custom-tokio" }
@@ -11,3 +11,8 @@ tracing-subscriber = { version = "0.3.18", features = [
     "env-filter",
     "chrono",
 ] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+debug = true

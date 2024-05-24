@@ -1,0 +1,28 @@
+[package]
+name = "wiretunn-ffi"
+version = "0.2.0"
+edition = "2021"
+authors = ["PengFei Bai <feifeigood91@gmail.com>"]
+
+[dependencies]
+libc = "0.2.153"
+lazy_static = "1.4.0"
+exitcode = "1.1.2"
+parking_lot = "0.12.1"
+futures = { version = "0.3.30", features = ["async-await"] }
+tokio = { version = "1.36.0", features = [
+    "net",
+    "macros",
+    "rt",
+    "parking_lot",
+    "time",
+    "io-util",
+    "sync",
+    "signal",
+] }
+
+wiretunn = { path = "../wiretunn" }
+
+[lib]
+name = "wiretunn"
+crate-type = ["staticlib", "rlib", "dylib"]

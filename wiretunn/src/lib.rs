@@ -8,12 +8,12 @@ use tun::TunBuilder;
 use crate::config::Config;
 
 mod api;
-mod rt;
 
 pub mod config;
 pub mod device;
 pub mod infra;
 pub mod log;
+pub mod rt;
 pub mod signal;
 pub mod tun;
 
@@ -29,19 +29,21 @@ pub enum Error {
     TomlError(#[from] toml::de::Error),
 }
 
+#[allow(unused)]
 pub struct App {
     cfg: RwLock<Arc<Config>>,
     wg_devices: Arc<RwLock<HashMap<String, WgDevice>>>,
 
-    #[allow(unused)]
     guard: AppGuard,
     shutdown_token: CancellationToken,
 }
 
 impl App {
     fn new(conf: Option<PathBuf>) -> Result<App, Error> {
-        let config = Config::load(conf)?;
+        Self::with_config(Config::load(conf)?)
+    }
 
+    pub fn with_config(config: Config) -> Result<App, Error> {
         let guard = {
             let log_guard = if !config.log_enabled() {
                 None
@@ -68,92 +70,106 @@ impl App {
             shutdown_token: CancellationToken::new(),
         })
     }
+
+    pub async fn run(&self) -> Result<(), Error> {
+        self.create_wg_devices().await?;
+        self.create_controller_apis().await?;
+
+        self.wwait_until_exit().await
+    }
+
+    pub async fn shutdown(&self) {
+        self.shutdown_token.cancel()
+    }
+
+    async fn wwait_until_exit(&self) -> Result<(), Error> {
+        let signal = Box::pin(signal::shutdown());
+        let shutdown = Box::pin(self.shutdown_token.cancelled());
+
+        match futures::future::select(signal, shutdown).await {
+            _ => {
+                // close all wireguard device
+                self.wg_devices
+                    .write()
+                    .await
+                    .iter()
+                    .for_each(|(_, device)| device.shutdown());
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn create_wg_devices(&self) -> Result<(), Error> {
+        let cfg = self.cfg.read().await.clone();
+        let wg_devices = self.wg_devices.clone();
+
+        for (device_name, device_config) in cfg.wg_devices() {
+            let mut tun_builder = TunBuilder::default();
+            #[cfg(not(target_os = "macos"))]
+            tun_builder.tun_name(&device_name);
+            tun_builder.address(device_config.address);
+            tun_builder.destination(device_config.address);
+            // https://gist.github.com/nitred/f16850ca48c48c79bf422e90ee5b9d95#file-peer_mtu_vs_bandwidth-png
+            tun_builder.mtu(device_config.mtu.unwrap_or(1420) as _);
+            // for iOS/Android NE or VpnService
+            #[cfg(unix)]
+            if let Some(tun_fd) = device_config.tun_fd {
+                tun_builder.file_descriptor(tun_fd);
+            }
+
+            let tun_device = tun_builder.build().await?;
+            let mut routes = vec![];
+            for peer in device_config.wg_peers.iter() {
+                routes.extend_from_slice(&peer.allowed_ips);
+            }
+
+            _ = tun::set_route_configuration(tun_device.tun_name()?, routes, false).await;
+            let wg_device = WgDevice::builder()
+                .build(tun_device, device_config.clone())
+                .await?;
+
+            wg_devices
+                .write()
+                .await
+                .insert(device_name.into(), wg_device);
+        }
+
+        Ok(())
+    }
+
+    async fn create_controller_apis(&self) -> Result<(), Error> {
+        let cfg = self.cfg.read().await.clone();
+        let shutdown_token = self.shutdown_token.clone();
+        let api = api::router(self);
+
+        if let Some(external_controller) = cfg.external_controller() {
+            let listener = tokio::net::TcpListener::bind(external_controller).await?;
+            tracing::info!(
+                "Listening external controller apis on {}",
+                listener.local_addr().unwrap()
+            );
+
+            tokio::spawn(async move {
+                axum::serve(listener, api)
+                    .with_graceful_shutdown(async move {
+                        shutdown_token.cancelled().await;
+                    })
+                    .await
+                    .expect("Failed to create controller api");
+            });
+        }
+
+        Ok(())
+    }
 }
 
 pub fn bootstrap(conf: Option<PathBuf>) -> Result<(), Error> {
     let app = Arc::new(App::new(conf)?);
-
     let runtime = crate::rt::build();
-    let _guard = runtime.enter();
-
-    runtime.block_on(async {
-        create_wg_devices(&app).await?;
-        create_controller_apis(&app).await?;
-        Ok::<_, Error>(())
-    })?;
-
-    runtime.block_on(async move {
-        signal::shutdown().await;
-
-        // close all wireguard device
-        app.wg_devices
-            .write()
-            .await
-            .iter()
-            .for_each(|(_, device)| device.shutdown());
-    });
-
+    let _g = runtime.enter();
+    runtime.block_on(async move { app.run().await })?;
     runtime.shutdown_timeout(Duration::from_secs(5));
-
-    Ok(())
-}
-
-async fn create_wg_devices(app: &Arc<App>) -> Result<(), Error> {
-    let cfg = app.cfg.read().await.clone();
-
-    let wg_devices = app.wg_devices.clone();
-
-    for (device_name, device_config) in cfg.wg_devices() {
-        let mut tun_builder = TunBuilder::default();
-        #[cfg(not(target_os = "macos"))]
-        tun_builder.tun_name(&device_name);
-        tun_builder.address(device_config.address);
-        tun_builder.destination(device_config.address);
-        // https://gist.github.com/nitred/f16850ca48c48c79bf422e90ee5b9d95#file-peer_mtu_vs_bandwidth-png
-        tun_builder.mtu(device_config.mtu.unwrap_or(1420) as _);
-
-        let tun_device = tun_builder.build().await?;
-        let mut routes = vec![];
-        for peer in device_config.wg_peers.iter() {
-            routes.extend_from_slice(&peer.allowed_ips);
-        }
-
-        _ = tun::set_route_configuration(tun_device.tun_name()?, routes, false).await;
-        let wg_device = WgDevice::builder()
-            .build(tun_device, device_config.clone())
-            .await?;
-
-        wg_devices
-            .write()
-            .await
-            .insert(device_name.into(), wg_device);
-    }
-
-    Ok(())
-}
-
-async fn create_controller_apis(app: &Arc<App>) -> Result<(), Error> {
-    let cfg = app.cfg.read().await.clone();
-    let shutdown_token = app.shutdown_token.clone();
-    let api = api::router(app);
-
-    if let Some(external_controller) = cfg.external_controller() {
-        let listener = tokio::net::TcpListener::bind(external_controller).await?;
-        tracing::info!(
-            "Listening external controller apis on {}",
-            listener.local_addr().unwrap()
-        );
-
-        tokio::spawn(async move {
-            axum::serve(listener, api)
-                .with_graceful_shutdown(async move {
-                    shutdown_token.cancelled().await;
-                })
-                .await
-                .expect("Failed to create controller api");
-        });
-    }
-
     Ok(())
 }
 
