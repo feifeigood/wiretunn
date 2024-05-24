@@ -15,6 +15,7 @@ use crate::Error;
 #[derive(Deserialize, Clone)]
 pub struct Config {
     external_controller: Option<SocketAddr>,
+    #[serde(default)]
     log: LogConfig,
     #[serde(rename = "wireguard", default = "HashMap::new")]
     wg_devices: HashMap<String, WgDeviceConfig>,
@@ -51,7 +52,11 @@ impl Config {
             panic!("Configuration file {:?} not exist.", path);
         }
 
-        Ok(toml::from_str(&fs::read_to_string(path)?)?)
+        Self::load_from_str(&fs::read_to_string(path)?)
+    }
+
+    pub fn load_from_str(s: &str) -> Result<Config, Error> {
+        Ok(toml::from_str(s)?)
     }
 
     #[inline]
@@ -147,6 +152,8 @@ pub struct WgDeviceConfig {
     pub mtu: Option<i32>,
     #[serde(default)]
     pub use_connected_socket: bool,
+    #[cfg(unix)]
+    pub tun_fd: Option<i32>,
     #[serde(rename = "peer", default = "Vec::new")]
     pub wg_peers: Vec<WgPeerConfig>,
 }
