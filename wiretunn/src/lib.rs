@@ -44,7 +44,7 @@ impl App {
     }
 
     pub fn with_config(config: Config) -> Result<App, Error> {
-        let guard = {
+        let guard: AppGuard = {
             let log_guard = if !config.log_enabled() {
                 None
             } else {
@@ -56,7 +56,7 @@ impl App {
                     config.log_num(),
                     #[cfg(unix)]
                     None,
-                    config.log_config().console.unwrap_or_default(),
+                    config.log_config().console.unwrap_or(true),
                 ))
             };
 
