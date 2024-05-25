@@ -25,4 +25,4 @@ wiretunn = { path = "../wiretunn" }
 
 [lib]
 name = "wiretunn"
-crate-type = ["staticlib", "rlib", "dylib"]
+crate-type = ["staticlib", "rlib", "cdylib"]
