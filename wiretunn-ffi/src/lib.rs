@@ -29,6 +29,8 @@ pub unsafe extern "C" fn wiretunn_app_run(runtime_id: u8, s: *const c_char) -> i
         }
     };
 
+    println!("{}", config_str);
+
     let config = match Config::load_from_str(config_str) {
         Ok(config) => config,
         Err(_) => {
@@ -63,6 +65,9 @@ pub unsafe extern "C" fn wiretunn_app_run(runtime_id: u8, s: *const c_char) -> i
         eprintln!("running wiretunn app error {:?}", e);
         return exitcode::IOERR;
     }
+
+    rt.shutdown_background();
+    RUNTIME_MANAGER.lock().remove(&runtime_id);
 
     exitcode::OK
 }
