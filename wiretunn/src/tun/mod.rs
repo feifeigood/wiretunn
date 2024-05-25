@@ -69,7 +69,11 @@ pub struct Tun {
 
 impl Tun {
     pub fn tun_name(&self) -> Result<String, Error> {
-        self.device.as_ref().tun_name().map_err(Error::TunError)
+        Ok(self
+            .device
+            .as_ref()
+            .tun_name()
+            .unwrap_or("<no ifname>".into()))
     }
 
     pub fn address(&self) -> Result<IpAddr, Error> {
