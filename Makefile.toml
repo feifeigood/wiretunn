@@ -9,7 +9,7 @@ args = ["fmt", "--", "--emit=files"]
 
 [tasks.build]
 command = "cargo"
-args = ["build"]
+args = ["build", "--release"]
 
 [tasks.clean]
 command = "cargo"
@@ -19,3 +19,52 @@ args = ["clean"]
 command = "cargo"
 args = ["test"]
 dependencies = ["clean"]
+
+[tasks.apple]
+script_runner = "@shell"
+script = '''
+rm -rf $CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY/libs/libwiretunn.xcframework
+xcodebuild -create-xcframework \
+  		-library "$CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY/libs/macos/libwiretunn_macos.a" \
+  		-headers "$CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY/wiretunn-ffi/include" \
+  		-library "$CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY/libs/ios/libwiretunn_iossimulator.a" \
+  		-headers "$CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY/wiretunn-ffi/include" \
+  		-library "$CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY/libs/ios/libwiretunn_ios.a" \
+  		-headers "$CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY/wiretunn-ffi/include" \
+  		-output "$CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY/libs/libwiretunn.xcframework"
+'''
+dependencies = ["build-libmacos", "build-libios"]
+
+[tasks.build-libios]
+private = true
+script_runner = "@shell"
+script = '''
+mkdir -p "$CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY/libs/ios"
+rustup target add aarch64-apple-ios x86_64-apple-ios aarch64-apple-ios-sim
+cargo build --release -p wiretunn-ffi --target aarch64-apple-ios
+lipo -create \
+"$CARGO_MAKE_CRATE_TARGET_DIRECTORY/aarch64-apple-ios/release/libwiretunn.a" \
+-output "$CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY/libs/ios/libwiretunn_ios.a"
+
+cargo build --release -p wiretunn-ffi --target aarch64-apple-ios-sim
+cargo build --release -p wiretunn-ffi --target x86_64-apple-ios
+lipo -create \
+"$CARGO_MAKE_CRATE_TARGET_DIRECTORY/x86_64-apple-ios/release/libwiretunn.a" \
+"$CARGO_MAKE_CRATE_TARGET_DIRECTORY/aarch64-apple-ios-sim/release/libwiretunn.a" \
+-output "$CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY/libs/ios/libwiretunn_iossimulator.a"
+'''
+
+[tasks.build-libmacos]
+private = true
+script_runner = "@shell"
+script = '''
+export MACOSX_DEPLOYMENT_TARGET=10.15
+mkdir -p "$CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY/libs/macos"
+rustup target add aarch64-apple-darwin x86_64-apple-darwin
+cargo build --release -p wiretunn-ffi --target x86_64-apple-darwin
+cargo build --release -p wiretunn-ffi --target aarch64-apple-darwin
+lipo -create \
+"$CARGO_MAKE_CRATE_TARGET_DIRECTORY/x86_64-apple-darwin/release/libwiretunn.a" \
+"$CARGO_MAKE_CRATE_TARGET_DIRECTORY/aarch64-apple-darwin/release/libwiretunn.a" \
+-output "$CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY/libs/macos/libwiretunn_macos.a"
+'''

@@ -14,5 +14,6 @@ tracing-subscriber = { version = "0.3.18", features = [
 
 [profile.release]
 lto = true
-codegen-units = 1
-debug = true
+codegen-units = 1 # Use only 1 codegen-unit to enable full optimizations.
+panic = "abort"   # Must set abort, otherwise iOS/MacOS will panic
+strip = true
