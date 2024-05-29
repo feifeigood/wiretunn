@@ -14,6 +14,7 @@ use crate::Error;
 
 #[derive(Deserialize, Clone)]
 pub struct Config {
+    // interface_name: Option<String>,
     external_controller: Option<SocketAddr>,
     #[serde(default)]
     log: LogConfig,
@@ -154,6 +155,8 @@ pub struct WgDeviceConfig {
     pub use_connected_socket: bool,
     #[cfg(unix)]
     pub tun_fd: Option<i32>,
+    #[cfg(unix)]
+    pub tun_fd_close_on_drop: Option<bool>,
     #[serde(rename = "peer", default = "Vec::new")]
     pub wg_peers: Vec<WgPeerConfig>,
 }

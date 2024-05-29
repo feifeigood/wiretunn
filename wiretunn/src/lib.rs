@@ -116,6 +116,9 @@ impl App {
             #[cfg(unix)]
             if let Some(tun_fd) = device_config.tun_fd {
                 tun_builder.file_descriptor(tun_fd);
+                tun_builder.file_descriptor_close_on_drop(
+                    device_config.tun_fd_close_on_drop.unwrap_or(true),
+                );
             }
 
             let tun_device = tun_builder.build().await?;

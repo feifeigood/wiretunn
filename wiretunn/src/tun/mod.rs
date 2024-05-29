@@ -44,6 +44,11 @@ impl TunBuilder {
         self.tun_config.raw_fd(fd);
     }
 
+    #[cfg(unix)]
+    pub fn file_descriptor_close_on_drop(&mut self, close_fd_on_drop: bool) {
+        self.tun_config.close_fd_on_drop(close_fd_on_drop);
+    }
+
     pub fn mtu(&mut self, mtu: u16) {
         self.tun_config.mtu(mtu);
     }
