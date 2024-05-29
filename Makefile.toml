@@ -14,6 +14,14 @@ args = ["build", "--release"]
 [tasks.clean]
 command = "cargo"
 args = ["clean"]
+dependencies = ["libclean"]
+
+[tasks.libclean]
+private = true
+script_runner = "@shell"
+script = '''
+rm -rf $CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY/libs
+'''
 
 [tasks.test]
 command = "cargo"
@@ -21,6 +29,7 @@ args = ["test"]
 dependencies = ["clean"]
 
 [tasks.apple]
+workspace = false
 script_runner = "@shell"
 script = '''
 rm -rf $CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY/libs/libwiretunn.xcframework
@@ -68,3 +77,61 @@ lipo -create \
 "$CARGO_MAKE_CRATE_TARGET_DIRECTORY/aarch64-apple-darwin/release/libwiretunn.a" \
 -output "$CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY/libs/macos/libwiretunn_macos.a"
 '''
+
+[tasks.android]
+workspace = false
+install_crate = { crate_name = "cross", binary = "cargo", test_arg = [
+	"--version",
+	"-q",
+], min_version = "0.2.5" }
+script_runner = "@shell"
+script = '''
+rm -rf $CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY/libs/android
+rm -rf $CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY/libs/libwiretunn_android.tar.gz
+mkdir -p $CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY/libs/android/{aarch64,armv7,x86_64,i686}
+cp $CARGO_MAKE_CRATE_TARGET_DIRECTORY/aarch64-linux-android/release/libwiretunn.so $CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY/libs/android/aarch64/libwiretunn.so
+cp $CARGO_MAKE_CRATE_TARGET_DIRECTORY/armv7-linux-androideabi/release/libwiretunn.so $CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY/libs/android/armv7/libwiretunn.so
+cp $CARGO_MAKE_CRATE_TARGET_DIRECTORY/x86_64-linux-android/release/libwiretunn.so $CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY/libs/android/x86_64/libwiretunn.so
+cp $CARGO_MAKE_CRATE_TARGET_DIRECTORY/i686-linux-android/release/libwiretunn.so $CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY/libs/android/i686/libwiretunn.so
+cp $CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY/wiretunn-ffi/include/wiretunn_ffi.h $CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY/libs/android/
+cd $CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY/libs; tar -cvzf libwiretunn_android.tar.gz android/
+'''
+dependencies = [
+	"android-aarch64",
+	"android-armv7",
+	"android-x86_64",
+	"android-i686",
+]
+
+[tasks.android-aarch64]
+private = true
+env = { ANDROID_BUILD_TARGET = "aarch64-linux-android" }
+run_task = "build-androidlib"
+
+[tasks.android-armv7]
+private = true
+env = { ANDROID_BUILD_TARGET = "armv7-linux-androideabi" }
+run_task = "build-androidlib"
+
+[tasks.android-x86_64]
+private = true
+env = { ANDROID_BUILD_TARGET = "x86_64-linux-android" }
+run_task = "build-androidlib"
+
+[tasks.android-i686]
+private = true
+env = { ANDROID_BUILD_TARGET = "i686-linux-android" }
+run_task = "build-androidlib"
+
+[tasks.build-androidlib]
+private = true
+condition = { env_set = ["ANDROID_BUILD_TARGET"] }
+command = "cross"
+args = [
+	"build",
+	"--release",
+	"-p",
+	"wiretunn-ffi",
+	"--target",
+	"${ANDROID_BUILD_TARGET}",
+]
