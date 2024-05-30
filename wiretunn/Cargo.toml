@@ -12,7 +12,6 @@ multicore = ["tokio/rt-multi-thread", "num_cpus"]
 thiserror = "1"
 cfg-if = "1.0.0"
 chrono = "0.4.38"
-libc = "0.2.153"
 serde = { version = "1.0.197", features = ["derive"] }
 serde_with = "3.7.0"
 serde_json = "1.0.117"
@@ -77,6 +76,7 @@ smoltcp = { version = "0.11", default-features = false, features = [
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 boringtun = { workspace = true }
+libc = { workspace = true }
 
 [target.'cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))'.dependencies]
 net-route = "0.4.3"

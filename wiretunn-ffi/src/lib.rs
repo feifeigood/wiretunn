@@ -6,7 +6,7 @@
 
 use std::{
     collections::HashMap,
-    ffi::{c_char, CStr},
+    ffi::{c_char, CStr, CString},
     sync::Arc,
 };
 
@@ -17,6 +17,12 @@ use wiretunn::{config::Config, rt, App};
 
 lazy_static::lazy_static! {
      static ref RUNTIME_MANAGER: Mutex<HashMap<u8, mpsc::Sender<u8>>> = Mutex::new(HashMap::new());
+}
+
+/// Return FFI library version
+#[no_mangle]
+pub extern "C" fn wiretunn_version() -> *mut c_char {
+    CString::new(env!("CARGO_PKG_VERSION")).unwrap().into_raw()
 }
 
 /// Create and run a new Wiretunn App, this function will blocks current thread.

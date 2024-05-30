@@ -6,6 +6,11 @@
 #include <stdlib.h>
 
 /**
+ * Return FFI library version
+ */
+char *wiretunn_version(void);
+
+/**
  * Create and run a new Wiretunn App, this function will blocks current thread.
  */
 int32_t wiretunn_app_run(uint8_t runtime_id, const char *s);
