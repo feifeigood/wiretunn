@@ -82,7 +82,6 @@ boringtun = { workspace = true }
 net-route = "0.4.3"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-wintun = { version = "0.4.0", features = ["panic_on_unsent_packets"] }
 blake2 = "0.10.6"
 unicode-normalization = "0.1.23"
 windows-sys = { version = "0.52", features = [
