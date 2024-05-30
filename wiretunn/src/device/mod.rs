@@ -449,6 +449,13 @@ impl WgDeviceInner {
         // Then open new sockets and bind to the port
         let bind_addr4 = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port);
         let udp_sock4 = socket2::Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+
+        // bind() should be called after IP_UNICAST_IF on Windows
+        #[cfg(windows)]
+        if let Some(ref iface) = bind_iface {
+            crate::sys::set_ip_unicast_if(&udp_sock4, &bind_addr4.into(), iface)?;
+        };
+
         udp_sock4.set_reuse_address(true)?;
         udp_sock4.bind(&bind_addr4.into())?;
         udp_sock4.set_nonblocking(true)?;
@@ -468,6 +475,13 @@ impl WgDeviceInner {
 
         let bind_addr6 = SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, port, 0, 0);
         let udp_sock6 = socket2::Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP))?;
+
+        // bind() should be called after IP_UNICAST_IF on Windows
+        #[cfg(windows)]
+        if let Some(ref iface) = bind_iface {
+            crate::sys::set_ip_unicast_if(&udp_sock6, &bind_addr6.into(), iface)?;
+        };
+
         udp_sock6.set_reuse_address(true)?;
         udp_sock6.bind(&bind_addr6.into())?;
         udp_sock6.set_nonblocking(true)?;

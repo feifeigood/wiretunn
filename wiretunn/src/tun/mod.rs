@@ -23,7 +23,7 @@ impl TunBuilder {
 
         #[cfg(target_os = "windows")]
         self.tun_config.platform_config(|config| {
-            config.device_guid(self::sys::deterministic_guid(name));
+            config.device_guid(crate::sys::deterministic_guid(name));
         });
     }
 
