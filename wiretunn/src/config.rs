@@ -14,7 +14,7 @@ use crate::Error;
 
 #[derive(Deserialize, Clone)]
 pub struct Config {
-    // interface_name: Option<String>,
+    interface_name: Option<String>,
     external_controller: Option<SocketAddr>,
     #[serde(default)]
     log: LogConfig,
@@ -58,6 +58,11 @@ impl Config {
 
     pub fn load_from_str(s: &str) -> Result<Config, Error> {
         Ok(toml::from_str(s)?)
+    }
+
+    #[inline]
+    pub fn interface_name(&self) -> &Option<String> {
+        &self.interface_name
     }
 
     #[inline]

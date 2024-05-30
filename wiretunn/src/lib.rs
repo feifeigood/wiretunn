@@ -103,6 +103,7 @@ impl App {
 
     async fn create_wg_devices(&self) -> Result<(), Error> {
         let cfg = self.cfg.read().await.clone();
+        let bind_iface = cfg.interface_name().to_owned();
         let wg_devices = self.wg_devices.clone();
 
         for (device_name, device_config) in cfg.wg_devices() {
@@ -130,7 +131,7 @@ impl App {
 
             _ = sys::set_route_configuration(tun_device.tun_name()?, routes, false).await;
             let wg_device = WgDevice::builder()
-                .build(tun_device, device_config.clone())
+                .build(tun_device, device_config.clone(), bind_iface.to_owned())
                 .await?;
 
             wg_devices
