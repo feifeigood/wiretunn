@@ -500,10 +500,10 @@ impl WgDeviceInner {
             cfg_if::cfg_if! {
                if  #[cfg(target_os = "macos")] {
                     // Set IP_BOUND_IF for BSD-like
-                    crate::sys::set_ip_bound_if(&udp4, &bind_addr4.into(), iface)?;
+                    crate::sys::set_ip_bound_if(&udp6, &bind_addr6.into(), iface)?;
                } else if  #[cfg(target_os = "linux")] {
                     // Set SO_BINDTODEVICE for binding to a specific interface
-                    crate::sys::set_bindtodevice(&udp4, iface)?;
+                    crate::sys::set_bindtodevice(&udp6, iface)?;
                } else {
                     tracing::warn!("Outbound bind interface({}) has not ye been implemented on current platform", iface);
                }

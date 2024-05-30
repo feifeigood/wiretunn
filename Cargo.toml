@@ -14,7 +14,7 @@ tracing-subscriber = { version = "0.3.18", features = [
 ] }
 
 [profile.release]
-lto = true        # Enable Link Time Optimization
+lto = true        # Enable Link Time Optimization.
 codegen-units = 1 # Use only 1 codegen-unit to enable full optimizations.
-panic = "abort"   # Must set abort, otherwise iOS/MacOS will panic
+panic = "abort"   # Must set abort, otherwise iOS/MacOS will panic.
 strip = true      # Automatically strip symbols from the binary.
