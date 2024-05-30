@@ -87,15 +87,14 @@ impl App {
         let signal = Box::pin(signal::shutdown());
         let shutdown = Box::pin(self.shutdown_token.cancelled());
 
-        match futures::future::select(signal, shutdown).await {
-            _ => {
-                // close all wireguard device
-                self.wg_devices
-                    .write()
-                    .await
-                    .iter()
-                    .for_each(|(_, device)| device.shutdown());
-            }
+        futures::future::select(signal, shutdown).await;
+        {
+            // close all wireguard device
+            self.wg_devices
+                .write()
+                .await
+                .iter()
+                .for_each(|(_, device)| device.shutdown());
         }
 
         Ok(())

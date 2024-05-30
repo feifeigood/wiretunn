@@ -468,13 +468,17 @@ impl WgDeviceInner {
         let udp4 = UdpSocket::from_std(udp_sock4.into())?;
         #[cfg(unix)]
         if let Some(ref iface) = bind_iface {
-            // Set IP_BOUND_IF for BSD-like
-            #[cfg(target_os = "macos")]
-            crate::sys::set_ip_bound_if(&udp4, &bind_addr4.into(), iface)?;
-
-            // Set SO_BINDTODEVICE for binding to a specific interface
-            #[cfg(target_os = "linux")]
-            crate::sys::set_bindtodevice(&udp4, iface)?;
+            cfg_if::cfg_if! {
+               if  #[cfg(target_os = "macos")] {
+                    // Set IP_BOUND_IF for BSD-like
+                    crate::sys::set_ip_bound_if(&udp4, &bind_addr4.into(), iface)?;
+               } else if  #[cfg(target_os = "linux")] {
+                    // Set SO_BINDTODEVICE for binding to a specific interface
+                    crate::sys::set_bindtodevice(&udp4, iface)?;
+               } else {
+                    tracing::warn!("Outbound bind interface({}) has not ye been implemented on current platform", iface);
+               }
+            }
         };
 
         let bind_addr6 = SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, port, 0, 0);
@@ -493,13 +497,17 @@ impl WgDeviceInner {
         let udp6 = UdpSocket::from_std(udp_sock6.into())?;
         #[cfg(unix)]
         if let Some(ref iface) = bind_iface {
-            // Set IP_BOUND_IF for BSD-like
-            #[cfg(target_os = "macos")]
-            crate::sys::set_ip_bound_if(&udp6, &bind_addr6.into(), iface)?;
-
-            // Set SO_BINDTODEVICE for binding to a specific interface
-            #[cfg(target_os = "linux")]
-            crate::sys::set_bindtodevice(&udp4, iface)?;
+            cfg_if::cfg_if! {
+               if  #[cfg(target_os = "macos")] {
+                    // Set IP_BOUND_IF for BSD-like
+                    crate::sys::set_ip_bound_if(&udp4, &bind_addr4.into(), iface)?;
+               } else if  #[cfg(target_os = "linux")] {
+                    // Set SO_BINDTODEVICE for binding to a specific interface
+                    crate::sys::set_bindtodevice(&udp4, iface)?;
+               } else {
+                    tracing::warn!("Outbound bind interface({}) has not ye been implemented on current platform", iface);
+               }
+            }
         };
 
         self.udp4 = Some(Arc::new(udp4));
