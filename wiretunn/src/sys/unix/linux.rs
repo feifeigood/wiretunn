@@ -1,4 +1,4 @@
-use std::io;
+use std::{io, os::unix::io::AsRawFd};
 
 use ipnet::IpNet;
 use net_route::{Handle, Route};
@@ -46,6 +46,31 @@ pub async fn set_route_configuration(
             }
         }
     }
+
+    Ok(())
+}
+
+/// Binds to a specific network interface (device)
+pub fn set_bindtodevice<S: AsRawFd>(socket: &S, iface: &str) -> io::Result<()> {
+    let iface_bytes = iface.as_bytes();
+
+    unsafe {
+        let ret = libc::setsockopt(
+            socket.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_BINDTODEVICE,
+            iface_bytes.as_ptr() as *const _ as *const libc::c_void,
+            iface_bytes.len() as libc::socklen_t,
+        );
+
+        if ret != 0 {
+            let err = io::Error::last_os_error();
+            tracing::error!("set SO_BINDTODEVICE error: {}", err);
+            return Err(err);
+        }
+    }
+
+    tracing::debug!("set SO_BINDTODEVICE ifname: {} success", iface);
 
     Ok(())
 }

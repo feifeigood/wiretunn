@@ -471,6 +471,10 @@ impl WgDeviceInner {
             // Set IP_BOUND_IF for BSD-like
             #[cfg(target_os = "macos")]
             crate::sys::set_ip_bound_if(&udp4, &bind_addr4.into(), iface)?;
+
+            // Set SO_BINDTODEVICE for binding to a specific interface
+            #[cfg(target_os = "linux")]
+            crate::sys::set_bindtodevice(&udp4, iface)?;
         };
 
         let bind_addr6 = SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, port, 0, 0);
@@ -492,6 +496,10 @@ impl WgDeviceInner {
             // Set IP_BOUND_IF for BSD-like
             #[cfg(target_os = "macos")]
             crate::sys::set_ip_bound_if(&udp6, &bind_addr6.into(), iface)?;
+
+            // Set SO_BINDTODEVICE for binding to a specific interface
+            #[cfg(target_os = "linux")]
+            crate::sys::set_bindtodevice(&udp4, iface)?;
         };
 
         self.udp4 = Some(Arc::new(udp4));
