@@ -7,7 +7,7 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     sync::mpsc,
 };
-use tracing::{error, trace};
+use tracing::{error, trace, Level};
 use tun2::{AbstractDevice, AsyncDevice, Configuration as TunConfiguration, Layer};
 
 use crate::Error;
@@ -101,7 +101,11 @@ impl Tun {
                     // tun device read
                     n = self.device.read(&mut recv_buf) => {
                         let n = n?;
-                        if let Err(e) = iface_tx.send(recv_buf[..n].to_vec()) {
+                        let pkt = recv_buf[..n].to_vec();
+
+                        trace_ip_packet("Recv packet", &pkt);
+
+                        if let Err(e) = iface_tx.send(pkt) {
                             error!("failed to sent IP packet to tun device output channel, error: {:?}", e);
                         }
                     }
@@ -114,6 +118,9 @@ impl Tun {
                                 break
                             }
                         };
+
+                        trace_ip_packet("Send packet", &packet);
+
                         if let Err(e) = self.device.write(&packet).await {
                             error!("failed to sent IP packet, error: {:?}", e);
                         }
@@ -124,5 +131,25 @@ impl Tun {
         });
 
         Ok((iface_input, iface_output))
+    }
+}
+
+fn trace_ip_packet(message: &str, packet: &[u8]) {
+    if tracing::enabled!(Level::TRACE) {
+        use smoltcp::wire::*;
+
+        match IpVersion::of_packet(packet) {
+            Ok(IpVersion::Ipv4) => trace!(
+                "{}: {}",
+                message,
+                PrettyPrinter::<Ipv4Packet<&mut [u8]>>::new("", &packet)
+            ),
+            Ok(IpVersion::Ipv6) => trace!(
+                "{}: {}",
+                message,
+                PrettyPrinter::<Ipv6Packet<&mut [u8]>>::new("", &packet)
+            ),
+            _ => {}
+        }
     }
 }

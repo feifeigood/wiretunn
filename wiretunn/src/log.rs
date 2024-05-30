@@ -120,7 +120,7 @@ fn make_filter(level: Level, filter: Option<&str>) -> EnvFilter {
 #[inline]
 fn all_wiretunn(level: impl ToString, filter: Option<&str>) -> String {
     filter
-        .unwrap_or("wiretunn_cli={level},wiretunn={level},{env}")
+        .unwrap_or("wiretunn_cli={level},wiretunn={level},boringtun={level},{env}")
         .replace("{level}", level.to_string().to_uppercase().as_str())
         .replace("{env}", get_env().as_str())
 }

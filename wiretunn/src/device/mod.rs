@@ -444,8 +444,6 @@ impl WgDeviceInner {
             peer.lock().await.shutdown_endpoint();
         }
 
-        // TODO: implement bind_interface logic
-
         // Then open new sockets and bind to the port
         let bind_addr4 = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port);
         let udp_sock4 = socket2::Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
@@ -639,8 +637,6 @@ impl WgDeviceInner {
     }
 
     pub async fn handle_iface_packet(&self, packet: &[u8], dst_buf: &mut [u8]) {
-        trace_ip_packet("Received IP packet", packet);
-
         let dst_addr = match Tunn::dst_address(packet) {
             Some(addr) => addr,
             None => return,
@@ -876,26 +872,6 @@ fn reap_tasks(join_set: &mut JoinSet<()>) {
         .flatten()
         .is_some()
     {}
-}
-
-fn trace_ip_packet(message: &str, packet: &[u8]) {
-    if tracing::enabled!(Level::TRACE) {
-        use smoltcp::wire::*;
-
-        match IpVersion::of_packet(packet) {
-            Ok(IpVersion::Ipv4) => trace!(
-                "{}: {}",
-                message,
-                PrettyPrinter::<Ipv4Packet<&mut [u8]>>::new("", &packet)
-            ),
-            Ok(IpVersion::Ipv6) => trace!(
-                "{}: {}",
-                message,
-                PrettyPrinter::<Ipv6Packet<&mut [u8]>>::new("", &packet)
-            ),
-            _ => {}
-        }
-    }
 }
 
 /// Wrappers for connected `UdpSocket`
