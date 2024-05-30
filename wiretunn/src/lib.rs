@@ -8,6 +8,7 @@ use tun::TunBuilder;
 use crate::config::Config;
 
 mod api;
+mod sys;
 
 pub mod config;
 pub mod device;
@@ -127,7 +128,7 @@ impl App {
                 routes.extend_from_slice(&peer.allowed_ips);
             }
 
-            _ = tun::set_route_configuration(tun_device.tun_name()?, routes, false).await;
+            _ = sys::set_route_configuration(tun_device.tun_name()?, routes, false).await;
             let wg_device = WgDevice::builder()
                 .build(tun_device, device_config.clone())
                 .await?;

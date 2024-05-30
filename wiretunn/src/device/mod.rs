@@ -46,7 +46,7 @@ use peer::{AllowedIP, Peer};
 
 use crate::{
     config::{WgDeviceConfig, WgPeerConfig},
-    tun::{self, Tun},
+    tun::Tun,
     Error,
 };
 
@@ -390,7 +390,7 @@ impl WgDevice {
             });
         }
 
-        _ = tun::set_route_configuration(self.name.to_owned(), allowed_ips, remove).await;
+        _ = crate::sys::set_route_configuration(self.name.to_owned(), allowed_ips, remove).await;
     }
 
     pub fn shutdown(&self) {
@@ -434,6 +434,8 @@ impl WgDeviceInner {
         for peer in self.peers.iter_mut() {
             peer.lock().await.shutdown_endpoint();
         }
+
+        // TODO: implement bind_interface logic
 
         // Then open new sockets and bind to the port
         let udp_sock4 = socket2::Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;

@@ -12,10 +12,6 @@ use tun2::{AbstractDevice, AsyncDevice, Configuration as TunConfiguration, Layer
 
 use crate::Error;
 
-pub use self::sys::set_route_configuration;
-
-mod sys;
-
 #[derive(Default)]
 pub struct TunBuilder {
     tun_config: TunConfiguration,
