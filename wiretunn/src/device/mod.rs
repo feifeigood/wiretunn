@@ -775,7 +775,7 @@ impl WgDeviceInner {
             }
         }
 
-        info!("Peer added");
+        info!(message = "Peer added", endpoint=?endpoint);
     }
 
     #[allow(unused)]

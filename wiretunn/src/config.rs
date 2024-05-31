@@ -172,10 +172,10 @@ pub struct WgPeerConfig {
     pub public_key: x25519::PublicKey,
     #[serde(default, deserialize_with = "deserialize::wg_preshared_key")]
     pub preshared_key: Option<[u8; 32]>,
-    #[serde(deserialize_with = "deserialize::wg_allowed_ips")]
+    #[serde(default, deserialize_with = "deserialize::wg_allowed_ips")]
     pub allowed_ips: Vec<IpNet>,
     pub persistent_keepalive: Option<u16>,
-    #[serde(deserialize_with = "deserialize::wg_endpoint")]
+    #[serde(default, deserialize_with = "deserialize::wg_endpoint")]
     pub endpoint: Option<SocketAddr>,
 }
 
