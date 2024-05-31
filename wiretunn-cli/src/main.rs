@@ -8,11 +8,6 @@ use wiretunn::{bootstrap, config, log};
 /// The app name
 const NAME: &str = "Wiretunn";
 
-/// Returns a version as specified in Cargo.toml
-pub fn version() -> &'static str {
-    env!("CARGO_PKG_VERSION")
-}
-
 /// Wiretunn is WireGuard implementation in Rust for Mesh Networking
 ///
 #[derive(Parser, Debug)]
@@ -71,5 +66,5 @@ fn main() {
 
 fn run_service(conf: Option<PathBuf>) {
     bootstrap(conf).expect("Failed to run Wiretunn");
-    tracing::info!("{} {} shutdown", crate::NAME, crate::version());
+    tracing::info!("{} {} shutdown", crate::NAME, wiretunn::version());
 }

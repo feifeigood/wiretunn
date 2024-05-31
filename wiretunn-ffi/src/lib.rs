@@ -7,12 +7,14 @@
 use std::{
     collections::HashMap,
     ffi::{c_char, CStr, CString},
+    mem, ptr,
     sync::Arc,
 };
 
 use futures::future::Either;
 use parking_lot::Mutex;
-use tokio::sync::mpsc;
+use tokio::{runtime::Runtime, sync::mpsc};
+use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use wiretunn::{config::Config, rt, App};
 
 lazy_static::lazy_static! {
@@ -22,7 +24,7 @@ lazy_static::lazy_static! {
 /// Return FFI library version
 #[no_mangle]
 pub extern "C" fn wiretunn_version() -> *mut c_char {
-    CString::new(env!("CARGO_PKG_VERSION")).unwrap().into_raw()
+    CString::new(wiretunn::version()).unwrap().into_raw()
 }
 
 /// Create and run a new Wiretunn App, this function will blocks current thread.
@@ -89,4 +91,93 @@ pub unsafe extern "C" fn wiretunn_app_shutdown(runtime_id: u8) {
     {
         eprintln!("{:?}", e);
     };
+}
+
+lazy_static::lazy_static! {
+    static ref RUNTIME: Mutex<Runtime> = Mutex::new(rt::build());
+}
+
+pub struct ShutdownHandle {
+    tracker: TaskTracker,
+    shutdown_token: CancellationToken,
+}
+
+/// Allocate a new tunnel, return NULL on failure.
+#[no_mangle]
+pub unsafe extern "C" fn new_tunnel(s: *const c_char) -> *mut tokio::sync::Mutex<ShutdownHandle> {
+    let config_str = match unsafe { CStr::from_ptr(s) }.to_str() {
+        Ok(string) => string,
+        Err(e) => {
+            eprintln!("Parse config error: {:?}", e);
+            return ptr::null_mut();
+        }
+    };
+
+    println!("{}", config_str);
+
+    let config = match Config::load_from_str(config_str) {
+        Ok(config) => config,
+        Err(e) => {
+            eprintln!("Parse config error: {:?}", e);
+            return ptr::null_mut();
+        }
+    };
+
+    // Create Wiretunn App
+    let app = Arc::new(match App::with_config(config) {
+        Ok(app) => app,
+        Err(e) => {
+            eprintln!("Create Wiretunn app error: {:?}", e);
+            return ptr::null_mut();
+        }
+    });
+
+    let rt = RUNTIME.lock();
+    let _g = rt.enter();
+    let shutdown_handle = rt.block_on(async move {
+        let tracker = TaskTracker::new();
+        let shutdown_token = CancellationToken::new();
+
+        let shutdown_token_cloned = shutdown_token.clone();
+        tracker.spawn(async move {
+            let tunnel = Box::pin(app.run());
+            let shutdown_token = shutdown_token_cloned.clone();
+            let shutdown = Box::pin(shutdown_token.cancelled());
+
+            let _ = match futures::future::select(tunnel, shutdown).await {
+                // Tunnel future resolved without an error. This should never happen.
+                Either::Left((Ok(..), ..)) => unreachable!(),
+                Either::Left((Err(e), ..)) => Err(e),
+                Either::Right(_) => Ok(()),
+            };
+
+            tracing::info!("Wiretunn {} shutdown", wiretunn::version());
+        });
+
+        Box::new(tokio::sync::Mutex::new(ShutdownHandle {
+            tracker,
+            shutdown_token,
+        }))
+    });
+
+    Box::into_raw(shutdown_handle)
+}
+
+/// Drops the Tunnel object
+#[no_mangle]
+pub unsafe extern "C" fn tunnel_free(shutdown_handle: *mut tokio::sync::Mutex<ShutdownHandle>) {
+    let mut rt = RUNTIME.lock();
+    rt.block_on(async move {
+        let shutdown_handle = Box::from_raw(shutdown_handle);
+        shutdown_handle.lock().await.tracker.close();
+        shutdown_handle.lock().await.shutdown_token.cancel();
+        // Wait for all tasks to exit.
+        shutdown_handle.lock().await.tracker.wait().await;
+
+        drop(shutdown_handle)
+    });
+
+    // Drop previous runtime
+    let prev_rt = mem::replace(&mut *rt, rt::build());
+    prev_rt.shutdown_background();
 }

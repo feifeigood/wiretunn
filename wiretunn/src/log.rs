@@ -80,7 +80,9 @@ pub fn init_global_default<P: AsRef<Path>>(
 
     let guard = set_default(&dispatch);
 
-    set_global_default(dispatch).expect("");
+    if let Err(e) = set_global_default(dispatch) {
+        tracing::debug!("Initialize set trace dispatcher error: {}", e);
+    }
     guard
 }
 

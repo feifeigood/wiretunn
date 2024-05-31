@@ -181,3 +181,8 @@ pub fn bootstrap(conf: Option<PathBuf>) -> Result<(), Error> {
 struct AppGuard {
     log_guard: Option<tracing::dispatcher::DefaultGuard>,
 }
+
+/// Returns a version as specified in Cargo.toml
+pub fn version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+}
