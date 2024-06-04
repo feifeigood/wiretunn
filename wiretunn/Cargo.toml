@@ -12,7 +12,6 @@ multicore = ["tokio/rt-multi-thread", "num_cpus"]
 thiserror = "1"
 cfg-if = "1.0.0"
 chrono = "0.4.38"
-libc = "0.2.153"
 serde = { version = "1.0.197", features = ["derive"] }
 serde_with = "3.7.0"
 serde_json = "1.0.117"
@@ -33,7 +32,6 @@ dashmap = "5.5.3"
 ipnet = { version = "2.9.0", features = ["serde"] }
 ip_network = "0.4.1"
 ip_network_table = "0.2.0"
-net-route = "0.4.2"
 tun2 = { version = "1", features = ["async"] }
 socket2 = { version = "0.5.6", features = ["all"] }
 futures = { version = "0.3.30", features = ["async-await"] }
@@ -78,11 +76,18 @@ smoltcp = { version = "0.11", default-features = false, features = [
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 boringtun = { workspace = true }
+libc = { workspace = true }
+
+[target.'cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))'.dependencies]
+net-route = "0.4.3"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-wintun = { version = "0.4.0", features = ["panic_on_unsent_packets"] }
 blake2 = "0.10.6"
 unicode-normalization = "0.1.23"
-
-[lib]
-crate-type = ["staticlib", "cdylib", "rlib"]
+windows-sys = { version = "0.52", features = [
+    "Win32_Foundation",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
+    "Win32_Networking_WinSock",
+    "Win32_System_IO",
+] }

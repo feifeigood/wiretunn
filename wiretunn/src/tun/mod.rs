@@ -7,14 +7,10 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     sync::mpsc,
 };
-use tracing::{error, trace};
+use tracing::{error, trace, Level};
 use tun2::{AbstractDevice, AsyncDevice, Configuration as TunConfiguration, Layer};
 
 use crate::Error;
-
-pub use self::sys::set_route_configuration;
-
-mod sys;
 
 #[derive(Default)]
 pub struct TunBuilder {
@@ -27,7 +23,7 @@ impl TunBuilder {
 
         #[cfg(target_os = "windows")]
         self.tun_config.platform_config(|config| {
-            config.device_guid(self::sys::deterministic_guid(name));
+            config.device_guid(crate::sys::deterministic_guid(name));
         });
     }
 
@@ -42,6 +38,11 @@ impl TunBuilder {
     #[cfg(unix)]
     pub fn file_descriptor(&mut self, fd: RawFd) {
         self.tun_config.raw_fd(fd);
+    }
+
+    #[cfg(unix)]
+    pub fn file_descriptor_close_on_drop(&mut self, close_fd_on_drop: bool) {
+        self.tun_config.close_fd_on_drop(close_fd_on_drop);
     }
 
     pub fn mtu(&mut self, mtu: u16) {
@@ -69,7 +70,11 @@ pub struct Tun {
 
 impl Tun {
     pub fn tun_name(&self) -> Result<String, Error> {
-        self.device.as_ref().tun_name().map_err(Error::TunError)
+        Ok(self
+            .device
+            .as_ref()
+            .tun_name()
+            .unwrap_or("<no ifname>".into()))
     }
 
     pub fn address(&self) -> Result<IpAddr, Error> {
@@ -96,7 +101,11 @@ impl Tun {
                     // tun device read
                     n = self.device.read(&mut recv_buf) => {
                         let n = n?;
-                        if let Err(e) = iface_tx.send(recv_buf[..n].to_vec()) {
+                        let pkt = recv_buf[..n].to_vec();
+
+                        trace_ip_packet("Recv packet", &pkt);
+
+                        if let Err(e) = iface_tx.send(pkt) {
                             error!("failed to sent IP packet to tun device output channel, error: {:?}", e);
                         }
                     }
@@ -109,6 +118,9 @@ impl Tun {
                                 break
                             }
                         };
+
+                        trace_ip_packet("Send packet", &packet);
+
                         if let Err(e) = self.device.write(&packet).await {
                             error!("failed to sent IP packet, error: {:?}", e);
                         }
@@ -119,5 +131,25 @@ impl Tun {
         });
 
         Ok((iface_input, iface_output))
+    }
+}
+
+fn trace_ip_packet(message: &str, packet: &[u8]) {
+    if tracing::enabled!(Level::TRACE) {
+        use smoltcp::wire::*;
+
+        match IpVersion::of_packet(packet) {
+            Ok(IpVersion::Ipv4) => trace!(
+                "{}: {}",
+                message,
+                PrettyPrinter::<Ipv4Packet<&mut [u8]>>::new("", &packet)
+            ),
+            Ok(IpVersion::Ipv6) => trace!(
+                "{}: {}",
+                message,
+                PrettyPrinter::<Ipv6Packet<&mut [u8]>>::new("", &packet)
+            ),
+            _ => {}
+        }
     }
 }

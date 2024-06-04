@@ -80,7 +80,9 @@ pub fn init_global_default<P: AsRef<Path>>(
 
     let guard = set_default(&dispatch);
 
-    set_global_default(dispatch).expect("");
+    if let Err(e) = set_global_default(dispatch) {
+        tracing::debug!("Initialize set trace dispatcher error: {}", e);
+    }
     guard
 }
 
@@ -96,9 +98,10 @@ fn make_dispatch<W: for<'writer> MakeWriter<'writer> + 'static + Send + Sync>(
     filter: Option<&str>,
     writer: W,
 ) -> Dispatch {
-    let timer = ChronoLocal::new("%Y-%m-%d %H:%M:%S".to_string());
+    let timer = ChronoLocal::new("%Y-%m-%d %H:%M:%S%.3f%z".to_string());
     let layer = tracing_subscriber::fmt::layer()
         .with_timer(timer)
+        .with_ansi(false)
         .with_writer(writer);
 
     Dispatch::from(
@@ -119,7 +122,7 @@ fn make_filter(level: Level, filter: Option<&str>) -> EnvFilter {
 #[inline]
 fn all_wiretunn(level: impl ToString, filter: Option<&str>) -> String {
     filter
-        .unwrap_or("wiretunn_cli={level},wiretunn={level},{env}")
+        .unwrap_or("wiretunn_cli={level},wiretunn={level},boringtun={level},{env}")
         .replace("{level}", level.to_string().to_uppercase().as_str())
         .replace("{env}", get_env().as_str())
 }

@@ -1,0 +1,4 @@
+module libwiretunn {
+	header "wiretunn_ffi.h"
+	export *
+}

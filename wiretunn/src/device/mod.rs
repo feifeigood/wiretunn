@@ -46,7 +46,7 @@ use peer::{AllowedIP, Peer};
 
 use crate::{
     config::{WgDeviceConfig, WgPeerConfig},
-    tun::{self, Tun},
+    tun::Tun,
     Error,
 };
 
@@ -58,7 +58,12 @@ const MAX_UDP_SIZE: usize = (1 << 16) - 1;
 pub struct WgDeviceBuilder {}
 
 impl WgDeviceBuilder {
-    pub async fn build(&self, tun_device: Tun, config: WgDeviceConfig) -> Result<WgDevice, Error> {
+    pub async fn build(
+        &self,
+        tun_device: Tun,
+        config: WgDeviceConfig,
+        bind_iface: Option<String>,
+    ) -> Result<WgDevice, Error> {
         let name = tun_device.tun_name()?;
         let (iface_input, iface_output) = tun_device.run()?;
         let mut device_inner = WgDeviceInner {
@@ -77,7 +82,7 @@ impl WgDeviceBuilder {
             rate_limiter: RwLock::new(Default::default()),
         };
         device_inner.set_key(&config.private_key);
-        device_inner.open_listen_socket(0).await?; // Start listening on a random port
+        device_inner.open_listen_socket(0, bind_iface).await?; // Start listening on a random port
 
         #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
         if let Some(mark) = config.fwmark {
@@ -390,7 +395,7 @@ impl WgDevice {
             });
         }
 
-        _ = tun::set_route_configuration(self.name.to_owned(), allowed_ips, remove).await;
+        _ = crate::sys::set_route_configuration(self.name.to_owned(), allowed_ips, remove).await;
     }
 
     pub fn shutdown(&self) {
@@ -424,7 +429,11 @@ impl WgDeviceInner {
         self.next_index.lock().next()
     }
 
-    pub async fn open_listen_socket(&mut self, mut port: u16) -> Result<(), Error> {
+    pub async fn open_listen_socket(
+        &mut self,
+        mut port: u16,
+        bind_iface: Option<String>,
+    ) -> Result<(), Error> {
         // Binds the network facing interfaces
         // First close any existing open socket, and remove them from the event loop
         // TODO: how to confirm udp socket has been close?
@@ -436,9 +445,17 @@ impl WgDeviceInner {
         }
 
         // Then open new sockets and bind to the port
+        let bind_addr4 = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port);
         let udp_sock4 = socket2::Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+
+        // bind() should be called after IP_UNICAST_IF on Windows
+        #[cfg(windows)]
+        if let Some(ref iface) = bind_iface {
+            crate::sys::set_ip_unicast_if(&udp_sock4, &bind_addr4.into(), iface)?;
+        };
+
         udp_sock4.set_reuse_address(true)?;
-        udp_sock4.bind(&SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port).into())?;
+        udp_sock4.bind(&bind_addr4.into())?;
         udp_sock4.set_nonblocking(true)?;
 
         if port == 0 {
@@ -446,13 +463,53 @@ impl WgDeviceInner {
             port = udp_sock4.local_addr()?.as_socket().unwrap().port();
         }
 
+        let udp4 = UdpSocket::from_std(udp_sock4.into())?;
+        #[cfg(unix)]
+        if let Some(ref iface) = bind_iface {
+            cfg_if::cfg_if! {
+               if  #[cfg(target_os = "macos")] {
+                    // Set IP_BOUND_IF for BSD-like
+                    crate::sys::set_ip_bound_if(&udp4, &bind_addr4.into(), iface)?;
+               } else if  #[cfg(target_os = "linux")] {
+                    // Set SO_BINDTODEVICE for binding to a specific interface
+                    crate::sys::set_bindtodevice(&udp4, iface)?;
+               } else {
+                    tracing::warn!("Outbound bind interface({}) has not ye been implemented on current platform", iface);
+               }
+            }
+        };
+
+        let bind_addr6 = SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, port, 0, 0);
         let udp_sock6 = socket2::Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP))?;
+
+        // bind() should be called after IP_UNICAST_IF on Windows
+        #[cfg(windows)]
+        if let Some(ref iface) = bind_iface {
+            crate::sys::set_ip_unicast_if(&udp_sock6, &bind_addr6.into(), iface)?;
+        };
+
         udp_sock6.set_reuse_address(true)?;
-        udp_sock6.bind(&SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, port, 0, 0).into())?;
+        udp_sock6.bind(&bind_addr6.into())?;
         udp_sock6.set_nonblocking(true)?;
 
-        self.udp4 = Some(Arc::new(UdpSocket::from_std(udp_sock4.into())?));
-        self.udp6 = Some(Arc::new(UdpSocket::from_std(udp_sock6.into())?));
+        let udp6 = UdpSocket::from_std(udp_sock6.into())?;
+        #[cfg(unix)]
+        if let Some(ref iface) = bind_iface {
+            cfg_if::cfg_if! {
+               if  #[cfg(target_os = "macos")] {
+                    // Set IP_BOUND_IF for BSD-like
+                    crate::sys::set_ip_bound_if(&udp6, &bind_addr6.into(), iface)?;
+               } else if  #[cfg(target_os = "linux")] {
+                    // Set SO_BINDTODEVICE for binding to a specific interface
+                    crate::sys::set_bindtodevice(&udp6, iface)?;
+               } else {
+                    tracing::warn!("Outbound bind interface({}) has not ye been implemented on current platform", iface);
+               }
+            }
+        };
+
+        self.udp4 = Some(Arc::new(udp4));
+        self.udp6 = Some(Arc::new(udp6));
 
         self.listen_port = port;
 
@@ -580,8 +637,6 @@ impl WgDeviceInner {
     }
 
     pub async fn handle_iface_packet(&self, packet: &[u8], dst_buf: &mut [u8]) {
-        trace_ip_packet("Received IP packet", packet);
-
         let dst_addr = match Tunn::dst_address(packet) {
             Some(addr) => addr,
             None => return,
@@ -720,7 +775,7 @@ impl WgDeviceInner {
             }
         }
 
-        info!("Peer added");
+        info!(message = "Peer added", endpoint=?endpoint);
     }
 
     #[allow(unused)]
@@ -817,26 +872,6 @@ fn reap_tasks(join_set: &mut JoinSet<()>) {
         .flatten()
         .is_some()
     {}
-}
-
-fn trace_ip_packet(message: &str, packet: &[u8]) {
-    if tracing::enabled!(Level::TRACE) {
-        use smoltcp::wire::*;
-
-        match IpVersion::of_packet(packet) {
-            Ok(IpVersion::Ipv4) => trace!(
-                "{}: {}",
-                message,
-                PrettyPrinter::<Ipv4Packet<&mut [u8]>>::new("", &packet)
-            ),
-            Ok(IpVersion::Ipv6) => trace!(
-                "{}: {}",
-                message,
-                PrettyPrinter::<Ipv6Packet<&mut [u8]>>::new("", &packet)
-            ),
-            _ => {}
-        }
-    }
 }
 
 /// Wrappers for connected `UdpSocket`

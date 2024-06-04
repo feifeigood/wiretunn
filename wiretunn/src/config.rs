@@ -14,7 +14,9 @@ use crate::Error;
 
 #[derive(Deserialize, Clone)]
 pub struct Config {
+    interface_name: Option<String>,
     external_controller: Option<SocketAddr>,
+    #[serde(default)]
     log: LogConfig,
     #[serde(rename = "wireguard", default = "HashMap::new")]
     wg_devices: HashMap<String, WgDeviceConfig>,
@@ -51,7 +53,16 @@ impl Config {
             panic!("Configuration file {:?} not exist.", path);
         }
 
-        Ok(toml::from_str(&fs::read_to_string(path)?)?)
+        Self::load_from_str(&fs::read_to_string(path)?)
+    }
+
+    pub fn load_from_str(s: &str) -> Result<Config, Error> {
+        Ok(toml::from_str(s)?)
+    }
+
+    #[inline]
+    pub fn interface_name(&self) -> &Option<String> {
+        &self.interface_name
     }
 
     #[inline]
@@ -147,6 +158,10 @@ pub struct WgDeviceConfig {
     pub mtu: Option<i32>,
     #[serde(default)]
     pub use_connected_socket: bool,
+    #[cfg(unix)]
+    pub tun_fd: Option<i32>,
+    #[cfg(unix)]
+    pub tun_fd_close_on_drop: Option<bool>,
     #[serde(rename = "peer", default = "Vec::new")]
     pub wg_peers: Vec<WgPeerConfig>,
 }
@@ -157,10 +172,10 @@ pub struct WgPeerConfig {
     pub public_key: x25519::PublicKey,
     #[serde(default, deserialize_with = "deserialize::wg_preshared_key")]
     pub preshared_key: Option<[u8; 32]>,
-    #[serde(deserialize_with = "deserialize::wg_allowed_ips")]
+    #[serde(default, deserialize_with = "deserialize::wg_allowed_ips")]
     pub allowed_ips: Vec<IpNet>,
     pub persistent_keepalive: Option<u16>,
-    #[serde(deserialize_with = "deserialize::wg_endpoint")]
+    #[serde(default, deserialize_with = "deserialize::wg_endpoint")]
     pub endpoint: Option<SocketAddr>,
 }
 
