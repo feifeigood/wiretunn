@@ -104,11 +104,27 @@ fn make_dispatch<W: for<'writer> MakeWriter<'writer> + 'static + Send + Sync>(
         .with_ansi(false)
         .with_writer(writer);
 
-    Dispatch::from(
-        tracing_subscriber::registry()
-            .with(layer)
-            .with(make_filter(level, filter)),
-    )
+    cfg_if::cfg_if! {
+        if #[cfg(target_os = "android")] {
+            let logcat = match tracing_android::layer("Wiretunn") {
+                Ok(layer) => Some(layer),
+                Err(_) => None,
+            };
+
+            Dispatch::from(
+                tracing_subscriber::registry()
+                    .with(layer)
+                    .with(logcat)
+                    .with(make_filter(level, filter)),
+            )
+        } else {
+            Dispatch::from(
+                tracing_subscriber::registry()
+                    .with(layer)
+                    .with(make_filter(level, filter)),
+            )
+        }
+    }
 }
 
 #[inline]
