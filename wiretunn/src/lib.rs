@@ -110,6 +110,7 @@ impl App {
             #[cfg(not(target_os = "macos"))]
             tun_builder.tun_name(&device_name);
             tun_builder.address(device_config.address);
+            #[cfg(not(target_os = "windows"))]
             tun_builder.destination(device_config.address);
             // https://gist.github.com/nitred/f16850ca48c48c79bf422e90ee5b9d95#file-peer_mtu_vs_bandwidth-png
             tun_builder.mtu(device_config.mtu.unwrap_or(1420) as _);
