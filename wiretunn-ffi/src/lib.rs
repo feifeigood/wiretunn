@@ -15,7 +15,7 @@ use futures::future::Either;
 use parking_lot::Mutex;
 use tokio::{runtime::Runtime, sync::mpsc};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
-use wiretunn::{config::Config, rt, App};
+use wiretunn::{config::Config, log, rt, App};
 
 lazy_static::lazy_static! {
      static ref RUNTIME_MANAGER: Mutex<HashMap<u8, mpsc::Sender<u8>>> = Mutex::new(HashMap::new());
@@ -30,18 +30,23 @@ pub extern "C" fn wiretunn_version() -> *mut c_char {
 /// Create and run a new Wiretunn App, this function will blocks current thread.
 #[no_mangle]
 pub unsafe extern "C" fn wiretunn_app_run(runtime_id: u8, s: *const c_char) -> i32 {
+    // Init log
+    log::default(tracing::Level::DEBUG);
+
     let config_str = match unsafe { CStr::from_ptr(s) }.to_str() {
         Ok(string) => string,
-        Err(_) => {
+        Err(e) => {
+            tracing::error!("Parse config error: {:?}", e);
             return exitcode::CONFIG;
         }
     };
 
-    println!("{}", config_str);
+    tracing::info!("{}", config_str);
 
     let config = match Config::load_from_str(config_str) {
         Ok(config) => config,
-        Err(_) => {
+        Err(e) => {
+            tracing::error!("Parse config error: {:?}", e);
             return exitcode::CONFIG;
         }
     };
@@ -49,7 +54,8 @@ pub unsafe extern "C" fn wiretunn_app_run(runtime_id: u8, s: *const c_char) -> i
     // Create Wiretunn App
     let app = Arc::new(match App::with_config(config) {
         Ok(app) => app,
-        Err(_) => {
+        Err(e) => {
+            tracing::error!("Create Wiretunn app error: {:?}", e);
             return exitcode::UNAVAILABLE;
         }
     });
@@ -70,7 +76,7 @@ pub unsafe extern "C" fn wiretunn_app_run(runtime_id: u8, s: *const c_char) -> i
             Either::Right(_) => Ok(()),
         }
     }) {
-        eprintln!("running wiretunn app error {:?}", e);
+        tracing::error!("Running Wiretunn app error: {:?}", e);
         return exitcode::IOERR;
     }
 
@@ -89,7 +95,7 @@ pub unsafe extern "C" fn wiretunn_app_shutdown(runtime_id: u8) {
         .expect("shutdown wiretunn app fails")
         .blocking_send(0)
     {
-        eprintln!("{:?}", e);
+        tracing::error!("{:?}", e);
     };
 }
 
@@ -105,20 +111,23 @@ pub struct ShutdownHandle {
 /// Allocate a new tunnel, return NULL on failure.
 #[no_mangle]
 pub unsafe extern "C" fn new_tunnel(s: *const c_char) -> *mut tokio::sync::Mutex<ShutdownHandle> {
+    // Init log
+    log::default(tracing::Level::DEBUG);
+
     let config_str = match unsafe { CStr::from_ptr(s) }.to_str() {
         Ok(string) => string,
         Err(e) => {
-            eprintln!("Parse config error: {:?}", e);
+            tracing::error!("Parse config error: {:?}", e);
             return ptr::null_mut();
         }
     };
 
-    println!("{}", config_str);
+    tracing::info!("{}", config_str);
 
     let config = match Config::load_from_str(config_str) {
         Ok(config) => config,
         Err(e) => {
-            eprintln!("Parse config error: {:?}", e);
+            tracing::error!("Parse config error: {:?}", e);
             return ptr::null_mut();
         }
     };
@@ -127,7 +136,7 @@ pub unsafe extern "C" fn new_tunnel(s: *const c_char) -> *mut tokio::sync::Mutex
     let app = Arc::new(match App::with_config(config) {
         Ok(app) => app,
         Err(e) => {
-            eprintln!("Create Wiretunn app error: {:?}", e);
+            tracing::error!("Create Wiretunn app error: {:?}", e);
             return ptr::null_mut();
         }
     });
