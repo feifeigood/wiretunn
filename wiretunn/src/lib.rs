@@ -106,10 +106,12 @@ impl App {
         let wg_devices = self.wg_devices.clone();
 
         for (device_name, device_config) in cfg.wg_devices() {
+            let mut device_config = device_config.clone();
             let mut tun_builder = TunBuilder::default();
             #[cfg(not(target_os = "macos"))]
             tun_builder.tun_name(&device_name);
             tun_builder.address(device_config.address);
+            #[cfg(not(target_os = "windows"))]
             tun_builder.destination(device_config.address);
             // https://gist.github.com/nitred/f16850ca48c48c79bf422e90ee5b9d95#file-peer_mtu_vs_bandwidth-png
             tun_builder.mtu(device_config.mtu.unwrap_or(1420) as _);
@@ -124,13 +126,22 @@ impl App {
 
             let tun_device = tun_builder.build().await?;
             let mut routes = vec![];
-            for peer in device_config.wg_peers.iter() {
+            for peer in device_config.wg_peers.iter_mut() {
+                // calculate `AllowedIPs` If provide `excluded_ips` config
+                if !cfg.excluded_ips().is_empty() {
+                    let allowed_ips =
+                        device::split_disallowed_ips(&peer.allowed_ips, &cfg.excluded_ips());
+                    if !allowed_ips.is_empty() {
+                        peer.allowed_ips = allowed_ips;
+                    }
+                }
+
                 routes.extend_from_slice(&peer.allowed_ips);
             }
 
             _ = sys::set_route_configuration(tun_device.tun_name()?, routes, false).await;
             let wg_device = WgDevice::builder()
-                .build(tun_device, device_config.clone(), bind_iface.to_owned())
+                .build(tun_device, device_config, bind_iface.to_owned())
                 .await?;
 
             wg_devices

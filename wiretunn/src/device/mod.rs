@@ -25,6 +25,7 @@ use dashmap::DashMap;
 use futures::{ready, FutureExt};
 
 use ipnet::IpNet;
+use iprange::IpRange;
 use parking_lot::RwLock;
 use rand_core::{OsRng, RngCore};
 use socket2::{Domain, Protocol, Type};
@@ -93,7 +94,7 @@ impl WgDeviceBuilder {
             let pub_key = peer.public_key;
             let preshared_key = peer.preshared_key;
             let endpoint = peer.endpoint;
-            let allowed_ips = peer
+            let allowed_ips: Vec<AllowedIP> = peer
                 .allowed_ips
                 .iter()
                 .map(|x| AllowedIP::from(*x))
@@ -978,5 +979,83 @@ impl From<tokio::net::UdpSocket> for ConnectUdpSocket {
 impl std::os::unix::io::AsRawFd for ConnectUdpSocket {
     fn as_raw_fd(&self) -> std::os::unix::prelude::RawFd {
         self.socket.as_raw_fd()
+    }
+}
+
+/// Calculate complex `AllowedIPs` settings for Wireguard peer, by subtracting the "disallowed" IP
+/// https://www.procustodibus.com/blog/2021/03/wireguard-allowedips-calculator/
+pub fn split_disallowed_ips(allowed_ips: &Vec<IpNet>, disallowed_ips: &Vec<IpNet>) -> Vec<IpNet> {
+    let mut allowed_range4 = IpRange::new();
+    let mut allowed_range6 = IpRange::new();
+
+    for allowed_ip in allowed_ips.iter() {
+        match allowed_ip {
+            IpNet::V4(ip4) => _ = allowed_range4.add(ip4.to_owned()),
+            IpNet::V6(ip6) => _ = allowed_range6.add(ip6.to_owned()),
+        }
+    }
+
+    let mut disallowed_range4 = IpRange::new();
+    let mut disallowed_range6 = IpRange::new();
+
+    for disallowed_ip in disallowed_ips.into_iter() {
+        match disallowed_ip {
+            IpNet::V4(ip4) => _ = disallowed_range4.add(ip4.to_owned()),
+            IpNet::V6(ip6) => _ = disallowed_range6.add(ip6.to_owned()),
+        }
+    }
+
+    let mut merged_allowed_ips: Vec<IpNet> = vec![];
+
+    merged_allowed_ips.extend(
+        allowed_range4
+            .exclude(&disallowed_range4)
+            .iter()
+            .map(|x| IpNet::from(x))
+            .collect::<Vec<IpNet>>(),
+    );
+
+    merged_allowed_ips.extend(
+        allowed_range6
+            .exclude(&disallowed_range6)
+            .iter()
+            .map(|x| IpNet::from(x))
+            .collect::<Vec<IpNet>>(),
+    );
+
+    merged_allowed_ips.sort();
+    merged_allowed_ips
+}
+
+#[cfg(test)]
+mod tests {
+    use ipnet::IpNet;
+
+    use super::split_disallowed_ips;
+
+    #[test]
+    fn test_split_disallowed_ips() {
+        let allowed_ips: Vec<IpNet> = vec!["0.0.0.0/0".parse().unwrap(), "::/0".parse().unwrap()];
+        let disallowed_ips: Vec<IpNet> = vec![
+            "0.0.0.0/8".parse().unwrap(),
+            "10.0.0.0/8".parse().unwrap(),
+            "127.0.0.0/8".parse().unwrap(),
+            "169.254.0.0/16".parse().unwrap(),
+            "172.16.0.0/12".parse().unwrap(),
+            "192.168.0.0/16".parse().unwrap(),
+            "240.0.0.0/4".parse().unwrap(),
+            "fc00::/7".parse().unwrap(),
+            "fe80::/10".parse().unwrap(),
+        ];
+
+        // expect: 1.0.0.0/8, 2.0.0.0/7, 4.0.0.0/6, 8.0.0.0/7, 11.0.0.0/8, 12.0.0.0/6, 16.0.0.0/4, 32.0.0.0/3, 64.0.0.0/3, 96.0.0.0/4, 112.0.0.0/5, 120.0.0.0/6, 124.0.0.0/7, 126.0.0.0/8, 128.0.0.0/3, 160.0.0.0/5, 168.0.0.0/8, 169.0.0.0/9, 169.128.0.0/10, 169.192.0.0/11, 169.224.0.0/12, 169.240.0.0/13, 169.248.0.0/14, 169.252.0.0/15, 169.255.0.0/16, 170.0.0.0/7, 172.0.0.0/12, 172.32.0.0/11, 172.64.0.0/10, 172.128.0.0/9, 173.0.0.0/8, 174.0.0.0/7, 176.0.0.0/4, 192.0.0.0/9, 192.128.0.0/11, 192.160.0.0/13, 192.169.0.0/16, 192.170.0.0/15, 192.172.0.0/14, 192.176.0.0/12, 192.192.0.0/10, 193.0.0.0/8, 194.0.0.0/7, 196.0.0.0/6, 200.0.0.0/5, 208.0.0.0/4, 224.0.0.0/4, ::/1, 8000::/2, c000::/3, e000::/4, f000::/5, f800::/6, fe00::/9, fec0::/10, ff00::/8
+        println!(
+            "{}",
+            split_disallowed_ips(&allowed_ips, &disallowed_ips)
+                .iter()
+                .map(|x| format!("{}", x))
+                .collect::<Vec<String>>()
+                .join(", ")
+        );
     }
 }
