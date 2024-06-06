@@ -31,3 +31,8 @@ struct tunnel *new_tunnel(const char *s);
  * Drops the Tunnel object
  */
 void tunnel_free(struct tunnel *);
+
+/**
+ * Subtracting the "disallowed" IP address blocks from the "allowed" IP address blocks
+ */
+char *split_disallowed_ips(const char *allowed_ips, const char *disallowed_ips);

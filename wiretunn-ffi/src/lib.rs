@@ -190,3 +190,49 @@ pub unsafe extern "C" fn tunnel_free(shutdown_handle: *mut tokio::sync::Mutex<Sh
     let prev_rt = mem::replace(&mut *rt, rt::build());
     prev_rt.shutdown_background();
 }
+
+/// Subtracting the "disallowed" IP address blocks from the "allowed" IP address blocks
+#[no_mangle]
+pub unsafe extern "C" fn split_disallowed_ips(
+    allowed_ips: *const c_char,
+    disallowed_ips: *const c_char,
+) -> *mut c_char {
+    use ipnet::IpNet;
+
+    let (allowed_ips, disallowed_ips) =
+        unsafe { (CStr::from_ptr(allowed_ips), CStr::from_ptr(disallowed_ips)) };
+
+    if let (Ok(allowed_ips), Ok(disallowed_ips)) = (allowed_ips.to_str(), disallowed_ips.to_str()) {
+        let allowed_ips = allowed_ips
+            .split(',')
+            .into_iter()
+            .filter_map(|ipnet| ipnet.parse::<IpNet>().ok())
+            .collect::<Vec<IpNet>>();
+
+        let disallowed_ips = disallowed_ips
+            .split(',')
+            .into_iter()
+            .filter_map(|ipnet| ipnet.parse::<IpNet>().ok())
+            .collect::<Vec<IpNet>>();
+
+        if !allowed_ips.is_empty() && !disallowed_ips.is_empty() {
+            let calculated_allowed_ips =
+                wiretunn::device::split_disallowed_ips(&allowed_ips, &disallowed_ips);
+            if !calculated_allowed_ips.is_empty() {
+                return CString::new(
+                    calculated_allowed_ips
+                        .iter()
+                        .map(|x| format!("{}", x))
+                        .collect::<Vec<String>>()
+                        .join(","),
+                )
+                .unwrap()
+                .into_raw();
+            }
+        }
+    } else {
+        eprintln!("Couldn't convert allowed_ips/disallowed_ips to CStr");
+    }
+
+    ptr::null_mut()
+}
