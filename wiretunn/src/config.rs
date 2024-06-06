@@ -12,10 +12,11 @@ use serde::Deserialize;
 
 use crate::Error;
 
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Clone, Default)]
 pub struct Config {
     interface_name: Option<String>,
     external_controller: Option<SocketAddr>,
+    excluded_ips: Vec<IpNet>,
     #[serde(default)]
     log: LogConfig,
     #[serde(rename = "wireguard", default = "HashMap::new")]
@@ -68,6 +69,11 @@ impl Config {
     #[inline]
     pub fn external_controller(&self) -> Option<SocketAddr> {
         self.external_controller
+    }
+
+    #[inline]
+    pub fn excluded_ips(&self) -> &Vec<IpNet> {
+        &self.excluded_ips
     }
 
     #[inline]
