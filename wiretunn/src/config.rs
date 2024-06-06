@@ -13,11 +13,11 @@ use serde::Deserialize;
 use crate::Error;
 
 #[derive(Deserialize, Clone, Default)]
+#[serde(default)]
 pub struct Config {
     interface_name: Option<String>,
     external_controller: Option<SocketAddr>,
     excluded_ips: Vec<IpNet>,
-    #[serde(default)]
     log: LogConfig,
     #[serde(rename = "wireguard", default = "HashMap::new")]
     wg_devices: HashMap<String, WgDeviceConfig>,
