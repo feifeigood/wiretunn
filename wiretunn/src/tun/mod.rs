@@ -35,6 +35,14 @@ impl TunBuilder {
         self.tun_config.destination(addr.addr());
     }
 
+    #[allow(unused)]
+    pub fn dns_servers(&mut self, dns_servers: Vec<IpAddr>) {
+        #[cfg(target_os = "windows")]
+        self.tun_config.platform_config(|config| {
+            config.dns_servers(Some(dns_servers));
+        });
+    }
+
     #[cfg(unix)]
     pub fn file_descriptor(&mut self, fd: RawFd) {
         self.tun_config.raw_fd(fd);

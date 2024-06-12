@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     fs,
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
 };
 
@@ -18,6 +18,7 @@ pub struct Config {
     interface_name: Option<String>,
     external_controller: Option<SocketAddr>,
     excluded_ips: Vec<IpNet>,
+    nameservers: Vec<IpAddr>,
     log: LogConfig,
     #[serde(rename = "wireguard", default = "HashMap::new")]
     wg_devices: HashMap<String, WgDeviceConfig>,
@@ -69,6 +70,11 @@ impl Config {
     #[inline]
     pub fn external_controller(&self) -> Option<SocketAddr> {
         self.external_controller
+    }
+
+    #[inline]
+    pub fn nameservers(&self) -> &Vec<IpAddr> {
+        &self.nameservers
     }
 
     #[inline]
