@@ -113,9 +113,11 @@ impl App {
             tun_builder.address(device_config.address);
             #[cfg(not(target_os = "windows"))]
             tun_builder.destination(device_config.address);
-            tun_builder.dns_servers(cfg.nameservers().to_owned());
             // https://gist.github.com/nitred/f16850ca48c48c79bf422e90ee5b9d95#file-peer_mtu_vs_bandwidth-png
             tun_builder.mtu(device_config.mtu.unwrap_or(1420) as _);
+            if let Some(dns_servers) = &cfg.nameservers() {
+                tun_builder.dns_servers(dns_servers.to_owned());
+            }
             // for iOS/Android NE or VpnService
             #[cfg(unix)]
             if let Some(tun_fd) = device_config.tun_fd {

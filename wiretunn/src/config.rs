@@ -18,7 +18,7 @@ pub struct Config {
     interface_name: Option<String>,
     external_controller: Option<SocketAddr>,
     excluded_ips: Vec<IpNet>,
-    nameservers: Vec<IpAddr>,
+    nameservers: Option<Vec<IpAddr>>,
     log: LogConfig,
     #[serde(rename = "wireguard", default = "HashMap::new")]
     wg_devices: HashMap<String, WgDeviceConfig>,
@@ -73,7 +73,7 @@ impl Config {
     }
 
     #[inline]
-    pub fn nameservers(&self) -> &Vec<IpAddr> {
+    pub fn nameservers(&self) -> &Option<Vec<IpAddr>> {
         &self.nameservers
     }
 

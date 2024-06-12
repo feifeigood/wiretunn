@@ -39,7 +39,9 @@ impl TunBuilder {
     pub fn dns_servers(&mut self, dns_servers: Vec<IpAddr>) {
         #[cfg(target_os = "windows")]
         self.tun_config.platform_config(|config| {
-            config.dns_servers(Some(dns_servers));
+            if !dns_servers.is_empty() {
+                config.dns_servers(Some(dns_servers));
+            }
         });
     }
 
