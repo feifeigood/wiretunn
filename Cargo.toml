@@ -3,7 +3,7 @@ resolver = "2"
 members = ["wiretunn", "wiretunn-cli", "wiretunn-ffi"]
 
 [workspace.dependencies]
-libc = "0.2.153"
+libc = "0.2.155"
 boringtun = { git = "https://github.com/feifeigood/boringtun.git", branch = "custom-tokio" }
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = [
