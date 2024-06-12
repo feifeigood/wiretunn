@@ -2,7 +2,7 @@ use std::{
     ffi::{CStr, CString, OsString},
     io::{self, ErrorKind},
     mem,
-    net::{IpAddr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, SocketAddr},
     os::windows::{ffi::OsStringExt, io::AsRawSocket},
     process::Command,
     ptr, slice,
@@ -33,24 +33,62 @@ pub async fn set_route_configuration(
     routes: Vec<IpNet>,
     remove: bool,
 ) -> io::Result<()> {
-    for route in routes {
-        let mut binding = Command::new("netsh");
-        let mut cmd = binding
-            .arg("interface")
-            .arg(if route.addr().is_ipv4() {
-                "ipv4"
-            } else {
-                "ipv6"
-            })
-            .arg(if remove { "delete" } else { "add" })
-            .arg("route")
-            .arg(format!("{}/{}", route.addr(), route.prefix_len()).as_str())
-            .arg(format!("{}", ifname).as_str())
-            .arg("store=active");
+    let (ipv4_ifindex, ipv6_ifindex) = (
+        find_adapter_interface_index(
+            &SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 0),
+            &ifname,
+        )?,
+        find_adapter_interface_index(
+            &SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 0),
+            &ifname,
+        )?,
+    );
 
-        tracing::debug!("{}", format!("{:?}", cmd).replace("\"", ""));
-        if let Err(e) = cmd.output() {
-            warn!(message = "netsh add route error", error=?e);
+    if ipv4_ifindex.is_none() && ipv6_ifindex.is_none() {
+        return Err(io::Error::other("Missing interface index both IPv4/IPv6"));
+    };
+
+    let handle = Handle::new()?;
+    for route in routes {
+        let ifindex = if route.addr().is_ipv4() {
+            ipv4_ifindex
+        } else {
+            ipv6_ifindex
+        };
+        let ifindex = match ifindex {
+            Some(ifindex) => ifindex,
+            None => {
+                tracing::warn!("couldn't find interface index for set route configuration");
+                continue;
+            }
+        };
+
+        if remove {
+            if let Err(e) = handle
+                .delete(&Route::new(route.addr(), route.prefix_len()).with_ifindex(ifindex))
+                .await
+            {
+                tracing::warn!(
+                    "route delete {}/{} ifindex: {}, error: {}",
+                    route.addr(),
+                    route.prefix_len(),
+                    ifindex,
+                    e
+                );
+            }
+        } else {
+            if let Err(e) = handle
+                .add(&Route::new(route.addr(), route.prefix_len()).with_ifindex(ifindex))
+                .await
+            {
+                tracing::warn!(
+                    "route add {}/{} ifindex: {}, error: {}",
+                    route.addr(),
+                    route.prefix_len(),
+                    ifindex,
+                    e
+                );
+            }
         }
     }
 
