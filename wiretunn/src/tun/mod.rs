@@ -66,7 +66,15 @@ impl TunBuilder {
             config.ensure_root_privileges(true);
         });
 
-        let device = tun2::create_as_async(&self.tun_config)?;
+        let device = match tun2::create_as_async(&self.tun_config) {
+            Ok(device) => device,
+            Err(e) => match e {
+                // for Wintun maybe open failed, we should try again
+                #[cfg(target_os = "windows")]
+                tun2::Error::WintunError(..) => tun2::create_as_async(&self.tun_config)?,
+                other => return Err(Error::TunError(other)),
+            },
+        };
 
         Ok(Tun { device })
     }
