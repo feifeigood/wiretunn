@@ -1,6 +1,6 @@
 //! UDP socket with flow statistic monitored
 
-use std::{io, net::SocketAddr, sync::Arc};
+use std::{io, net::SocketAddr, os::fd::AsRawFd, sync::Arc};
 
 use tokio::net::{ToSocketAddrs, UdpSocket};
 
@@ -73,5 +73,12 @@ impl MonSocket {
     #[inline]
     pub fn flow_stat(&self) -> &FlowStat {
         &self.flow_stat
+    }
+}
+
+#[cfg(unix)]
+impl AsRawFd for MonSocket {
+    fn as_raw_fd(&self) -> std::os::unix::prelude::RawFd {
+        self.socket.as_raw_fd()
     }
 }
