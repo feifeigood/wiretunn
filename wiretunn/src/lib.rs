@@ -134,7 +134,7 @@ impl App {
                 // calculate `AllowedIPs` If provide `excluded_ips` config
                 if !cfg.excluded_ips().is_empty() {
                     let allowed_ips =
-                        device::split_disallowed_ips(&peer.allowed_ips, &cfg.excluded_ips());
+                        device::split_disallowed_ips(&peer.allowed_ips, cfg.excluded_ips());
                     if !allowed_ips.is_empty() {
                         peer.allowed_ips = allowed_ips;
                     }

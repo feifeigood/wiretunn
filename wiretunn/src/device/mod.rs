@@ -1000,7 +1000,7 @@ impl std::os::unix::io::AsRawFd for ConnectUdpSocket {
 
 /// Calculate complex `AllowedIPs` settings for Wireguard peer, by subtracting the "disallowed" IP
 /// https://www.procustodibus.com/blog/2021/03/wireguard-allowedips-calculator/
-pub fn split_disallowed_ips(allowed_ips: &Vec<IpNet>, disallowed_ips: &Vec<IpNet>) -> Vec<IpNet> {
+pub fn split_disallowed_ips(allowed_ips: &[IpNet], disallowed_ips: &Vec<IpNet>) -> Vec<IpNet> {
     let mut allowed_range4 = IpRange::new();
     let mut allowed_range6 = IpRange::new();
 
@@ -1014,7 +1014,7 @@ pub fn split_disallowed_ips(allowed_ips: &Vec<IpNet>, disallowed_ips: &Vec<IpNet
     let mut disallowed_range4 = IpRange::new();
     let mut disallowed_range6 = IpRange::new();
 
-    for disallowed_ip in disallowed_ips.into_iter() {
+    for disallowed_ip in disallowed_ips {
         match disallowed_ip {
             IpNet::V4(ip4) => _ = disallowed_range4.add(ip4.to_owned()),
             IpNet::V6(ip6) => _ = disallowed_range6.add(ip6.to_owned()),
@@ -1027,7 +1027,7 @@ pub fn split_disallowed_ips(allowed_ips: &Vec<IpNet>, disallowed_ips: &Vec<IpNet
         allowed_range4
             .exclude(&disallowed_range4)
             .iter()
-            .map(|x| IpNet::from(x))
+            .map(IpNet::from)
             .collect::<Vec<IpNet>>(),
     );
 
@@ -1035,7 +1035,7 @@ pub fn split_disallowed_ips(allowed_ips: &Vec<IpNet>, disallowed_ips: &Vec<IpNet
         allowed_range6
             .exclude(&disallowed_range6)
             .iter()
-            .map(|x| IpNet::from(x))
+            .map(IpNet::from)
             .collect::<Vec<IpNet>>(),
     );
 

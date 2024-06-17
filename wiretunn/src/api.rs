@@ -177,9 +177,10 @@ async fn traffic(
                     total_down += down;
                 });
 
-            if let Err(..) = socket
+            if (socket
                 .send(json!({"up":total_up,"down":total_down}).to_string().into())
-                .await
+                .await)
+                .is_err()
             {
                 break;
             }
