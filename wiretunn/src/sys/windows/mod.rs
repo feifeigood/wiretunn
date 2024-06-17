@@ -76,19 +76,17 @@ pub async fn set_route_configuration(
                     e
                 );
             }
-        } else {
-            if let Err(e) = handle
-                .add(&Route::new(route.addr(), route.prefix_len()).with_ifindex(ifindex))
-                .await
-            {
-                tracing::warn!(
-                    "route add {}/{} ifindex: {}, error: {}",
-                    route.addr(),
-                    route.prefix_len(),
-                    ifindex,
-                    e
-                );
-            }
+        } else if let Err(e) = handle
+            .add(&Route::new(route.addr(), route.prefix_len()).with_ifindex(ifindex))
+            .await
+        {
+            tracing::warn!(
+                "route add {}/{} ifindex: {}, error: {}",
+                route.addr(),
+                route.prefix_len(),
+                ifindex,
+                e
+            );
         }
     }
 
@@ -153,8 +151,8 @@ pub fn set_ip_unicast_if<S: AsRawSocket>(
                 let if_index = htonl(if_index);
                 setsockopt(
                     handle,
-                    IPPROTO_IP as i32,
-                    IP_UNICAST_IF as i32,
+                    IPPROTO_IP,
+                    IP_UNICAST_IF,
                     &if_index as *const _ as PCSTR,
                     mem::size_of_val(&if_index) as i32,
                 )
@@ -163,8 +161,8 @@ pub fn set_ip_unicast_if<S: AsRawSocket>(
                 // Interface index is in host byte order for IPPROTO_IPV6.
                 setsockopt(
                     handle,
-                    IPPROTO_IPV6 as i32,
-                    IPV6_UNICAST_IF as i32,
+                    IPPROTO_IPV6,
+                    IPV6_UNICAST_IF,
                     &if_index as *const _ as PCSTR,
                     mem::size_of_val(&if_index) as i32,
                 )

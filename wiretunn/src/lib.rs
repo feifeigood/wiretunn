@@ -110,7 +110,7 @@ impl App {
             let mut device_config = device_config.clone();
             let mut tun_builder = TunBuilder::default();
             #[cfg(not(target_os = "macos"))]
-            tun_builder.tun_name(&device_name);
+            tun_builder.tun_name(device_name);
             tun_builder.address(device_config.address);
             #[cfg(not(target_os = "windows"))]
             tun_builder.destination(device_config.address);
