@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Duration};
+use std::{collections::HashMap, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
 use device::WgDevice;
 use tokio::sync::RwLock;
@@ -8,6 +8,7 @@ use tun::TunBuilder;
 use crate::config::Config;
 
 mod api;
+mod net;
 mod sys;
 
 pub mod config;
@@ -169,12 +170,15 @@ impl App {
             );
 
             tokio::spawn(async move {
-                axum::serve(listener, api)
-                    .with_graceful_shutdown(async move {
-                        shutdown_token.cancelled().await;
-                    })
-                    .await
-                    .expect("Failed to create controller api");
+                axum::serve(
+                    listener,
+                    api.into_make_service_with_connect_info::<SocketAddr>(),
+                )
+                .with_graceful_shutdown(async move {
+                    shutdown_token.cancelled().await;
+                })
+                .await
+                .expect("Failed to create controller api");
             });
         }
 

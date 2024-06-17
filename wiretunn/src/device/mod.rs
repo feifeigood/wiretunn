@@ -47,6 +47,7 @@ use peer::{AllowedIP, Peer};
 
 use crate::{
     config::{WgDeviceConfig, WgPeerConfig},
+    net::{mon_socket::MonSocket, stats::FlowStat},
     tun::Tun,
     Error,
 };
@@ -75,6 +76,7 @@ impl WgDeviceBuilder {
             iface: iface_input,
             udp4: Default::default(),
             udp6: Default::default(),
+            flow_stat: Arc::new(FlowStat::new()),
             use_connected_socket: config.use_connected_socket,
             peers: Default::default(),
             peers_by_ip: RwLock::new(AllowedIps::new()),
@@ -194,7 +196,7 @@ impl WgDevice {
         Ok(())
     }
 
-    pub fn register_udp_handler(&mut self, udp: Arc<UdpSocket>) -> Result<(), Error> {
+    pub fn register_udp_handler(&mut self, udp: Arc<MonSocket>) -> Result<(), Error> {
         let shutdown = self.shutdown_token.clone();
         let d = self.device_inner.clone();
         let mut recv_buf = [0u8; MAX_UDP_SIZE];
@@ -203,7 +205,7 @@ impl WgDevice {
         info!(
             "Device {} register udp({}) handler",
             self.name,
-            udp.local_addr().unwrap()
+            udp.get_ref().local_addr().unwrap()
         );
 
         self.join_set.spawn(async move {
@@ -399,6 +401,13 @@ impl WgDevice {
         _ = crate::sys::set_route_configuration(self.name.to_owned(), allowed_ips, remove).await;
     }
 
+    pub fn traffic(&self) -> (u64, u64) {
+        (
+            self.device_inner.flow_stat.tx(),
+            self.device_inner.flow_stat.rx(),
+        )
+    }
+
     pub fn shutdown(&self) {
         self.shutdown_token.cancel();
     }
@@ -412,9 +421,10 @@ pub(super) struct WgDeviceInner {
     fwmark: Option<u32>,
 
     iface: UnboundedSender<Vec<u8>>,
-    udp4: Option<Arc<UdpSocket>>,
-    udp6: Option<Arc<UdpSocket>>,
+    udp4: Option<Arc<MonSocket>>,
+    udp6: Option<Arc<MonSocket>>,
 
+    flow_stat: Arc<FlowStat>,
     use_connected_socket: bool,
 
     peers: DashMap<x25519::PublicKey, Arc<Mutex<Peer>>>,
@@ -509,8 +519,14 @@ impl WgDeviceInner {
             }
         };
 
-        self.udp4 = Some(Arc::new(udp4));
-        self.udp6 = Some(Arc::new(udp6));
+        self.udp4 = Some(Arc::new(MonSocket::from_socket(
+            udp4,
+            self.flow_stat.clone(),
+        )));
+        self.udp6 = Some(Arc::new(MonSocket::from_socket(
+            udp6,
+            self.flow_stat.clone(),
+        )));
 
         self.listen_port = port;
 
@@ -561,7 +577,7 @@ impl WgDeviceInner {
 
     pub async fn handle_udp_packet(
         &self,
-        udp: &UdpSocket,
+        udp: &MonSocket,
         addr: SocketAddr,
         packet: &[u8],
         dst_buf: &mut [u8],
