@@ -95,7 +95,7 @@ pub async fn set_route_configuration(
     Ok(())
 }
 
-pub fn deterministic_guid(ifname: &str) -> Option<u128> {
+pub fn deterministic_guid(ifname: &str) -> u128 {
     use blake2::{Blake2s256, Digest};
     use byteorder::{ByteOrder, LittleEndian};
     use bytes::{BufMut, BytesMut};
@@ -112,7 +112,7 @@ pub fn deterministic_guid(ifname: &str) -> Option<u128> {
     let mut buf = [0u8; 16];
     buf.copy_from_slice(&Blake2s256::digest(&data[..])[..16]);
 
-    Some(u128::from_le_bytes(buf))
+    u128::from_le_bytes(buf)
 }
 
 /// Binds to a specific network interface (device)

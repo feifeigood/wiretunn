@@ -40,7 +40,7 @@ impl TunBuilder {
         #[cfg(target_os = "windows")]
         self.tun_config.platform_config(|config| {
             if !dns_servers.is_empty() {
-                config.dns_servers(Some(dns_servers));
+                config.dns_servers(dns_servers.as_slice());
             }
         });
     }
