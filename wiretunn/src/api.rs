@@ -1,7 +1,7 @@
-use std::{collections::HashMap, net::SocketAddr, sync::Arc};
+use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Duration};
 
 use axum::{
-    extract::{FromRef, Path, Query, State},
+    extract::{ConnectInfo, FromRef, Path, Query, State, WebSocketUpgrade},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{any, get, post},
@@ -11,7 +11,8 @@ use boringtun::x25519::PublicKey;
 use ipnet::IpNet;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tokio::sync::RwLock;
+use tokio::{sync::RwLock, time};
+use tracing::debug;
 
 use crate::{device::WgDevice, App};
 
@@ -36,6 +37,7 @@ pub fn router(app: &App) -> Router {
                 )
             }),
         )
+        .route("/traffic", get(traffic))
         .route(
             "/wg/:wg_name/peer",
             post(create_wg_peer).delete(remove_wg_peer),
@@ -151,4 +153,39 @@ async fn remove_wg_peer(
         )
             .into_response(),
     }
+}
+
+async fn traffic(
+    ws: WebSocketUpgrade,
+    ConnectInfo(saddr): ConnectInfo<SocketAddr>,
+    State(wg_device): State<WgDeviceState>,
+) -> Response {
+    ws.on_upgrade(move |mut socket| async move {
+        let mut interval = time::interval(Duration::from_secs(1));
+        loop {
+            interval.tick().await;
+
+            let (mut total_up, mut total_down) = (0u64, 0u64);
+            wg_device
+                .devices
+                .read()
+                .await
+                .iter()
+                .for_each(|(_, device)| {
+                    let (up, down) = device.traffic();
+                    total_up += up;
+                    total_down += down;
+                });
+
+            if (socket
+                .send(json!({"up":total_up,"down":total_down}).to_string().into())
+                .await)
+                .is_err()
+            {
+                break;
+            }
+        }
+
+        debug!("Websocket context {saddr} destoyed");
+    })
 }

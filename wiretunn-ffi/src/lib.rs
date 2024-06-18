@@ -205,13 +205,11 @@ pub unsafe extern "C" fn split_disallowed_ips(
     if let (Ok(allowed_ips), Ok(disallowed_ips)) = (allowed_ips.to_str(), disallowed_ips.to_str()) {
         let allowed_ips = allowed_ips
             .split(',')
-            .into_iter()
             .filter_map(|ipnet| ipnet.parse::<IpNet>().ok())
             .collect::<Vec<IpNet>>();
 
         let disallowed_ips = disallowed_ips
             .split(',')
-            .into_iter()
             .filter_map(|ipnet| ipnet.parse::<IpNet>().ok())
             .collect::<Vec<IpNet>>();
 

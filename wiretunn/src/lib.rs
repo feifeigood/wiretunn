@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Duration};
+use std::{collections::HashMap, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
 use device::WgDevice;
 use tokio::sync::RwLock;
@@ -8,6 +8,7 @@ use tun::TunBuilder;
 use crate::config::Config;
 
 mod api;
+mod net;
 mod sys;
 
 pub mod config;
@@ -109,7 +110,7 @@ impl App {
             let mut device_config = device_config.clone();
             let mut tun_builder = TunBuilder::default();
             #[cfg(not(target_os = "macos"))]
-            tun_builder.tun_name(&device_name);
+            tun_builder.tun_name(device_name);
             tun_builder.address(device_config.address);
             #[cfg(not(target_os = "windows"))]
             tun_builder.destination(device_config.address);
@@ -133,7 +134,7 @@ impl App {
                 // calculate `AllowedIPs` If provide `excluded_ips` config
                 if !cfg.excluded_ips().is_empty() {
                     let allowed_ips =
-                        device::split_disallowed_ips(&peer.allowed_ips, &cfg.excluded_ips());
+                        device::split_disallowed_ips(&peer.allowed_ips, cfg.excluded_ips());
                     if !allowed_ips.is_empty() {
                         peer.allowed_ips = allowed_ips;
                     }
@@ -169,12 +170,15 @@ impl App {
             );
 
             tokio::spawn(async move {
-                axum::serve(listener, api)
-                    .with_graceful_shutdown(async move {
-                        shutdown_token.cancelled().await;
-                    })
-                    .await
-                    .expect("Failed to create controller api");
+                axum::serve(
+                    listener,
+                    api.into_make_service_with_connect_info::<SocketAddr>(),
+                )
+                .with_graceful_shutdown(async move {
+                    shutdown_token.cancelled().await;
+                })
+                .await
+                .expect("Failed to create controller api");
             });
         }
 

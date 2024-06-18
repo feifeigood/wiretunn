@@ -33,10 +33,7 @@ ipnet = { version = "2.9.0", features = ["serde"] }
 ip_network = "0.4.1"
 ip_network_table = "0.2.0"
 iprange = { version = "0.6.7", features = ["serde"] }
-# tun2 = { version = "1", features = ["async"] }
-tun2 = { git = "https://github.com/feifeigood/rust-tun.git", branch = "v2", features = [
-    "async",
-] }
+tun2 = { version = "2", features = ["async"] }
 socket2 = { version = "0.5.6", features = ["all"] }
 futures = { version = "0.3.30", features = ["async-await"] }
 futures-util = { version = "0.3.30", features = ["sink"] }
@@ -51,7 +48,7 @@ tokio = { version = "1.36.0", features = [
     "signal",
 ] }
 tokio-util = { version = "0.7.10", features = ["codec"] }
-axum = { version = "0.7.5" }
+axum = { version = "0.7.5", features = ["ws"] }
 tower = { version = "0.4.13", features = [
     "util",
     "timeout",
