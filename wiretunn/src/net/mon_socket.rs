@@ -1,6 +1,9 @@
 //! UDP socket with flow statistic monitored
 
-use std::{io, net::SocketAddr, os::fd::AsRawFd, sync::Arc};
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
+
+use std::{io, net::SocketAddr, sync::Arc};
 
 use tokio::net::{ToSocketAddrs, UdpSocket};
 
