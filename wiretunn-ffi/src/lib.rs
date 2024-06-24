@@ -15,7 +15,7 @@ use futures::future::Either;
 use parking_lot::Mutex;
 use tokio::{runtime::Runtime, sync::mpsc};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
-use wiretunn::{config::Config, log, rt, App};
+use wiretunn::{config::Config, infra::logging, rt, App};
 
 lazy_static::lazy_static! {
      static ref RUNTIME_MANAGER: Mutex<HashMap<u8, mpsc::Sender<u8>>> = Mutex::new(HashMap::new());
@@ -31,7 +31,7 @@ pub extern "C" fn wiretunn_version() -> *mut c_char {
 #[no_mangle]
 pub unsafe extern "C" fn wiretunn_app_run(runtime_id: u8, s: *const c_char) -> i32 {
     // Init log
-    log::default(tracing::Level::DEBUG);
+    logging::default(tracing::Level::DEBUG);
 
     let config_str = match unsafe { CStr::from_ptr(s) }.to_str() {
         Ok(string) => string,
@@ -112,7 +112,7 @@ pub struct ShutdownHandle {
 #[no_mangle]
 pub unsafe extern "C" fn new_tunnel(s: *const c_char) -> *mut tokio::sync::Mutex<ShutdownHandle> {
     // Init log
-    log::default(tracing::Level::DEBUG);
+    logging::default(tracing::Level::DEBUG);
 
     let config_str = match unsafe { CStr::from_ptr(s) }.to_str() {
         Ok(string) => string,

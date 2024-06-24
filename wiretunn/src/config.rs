@@ -88,54 +88,6 @@ impl Config {
     }
 
     #[inline]
-    pub fn log_enabled(&self) -> bool {
-        self.log_num() > 0
-    }
-
-    pub fn log_level(&self) -> tracing::Level {
-        use tracing::Level;
-        match self.log.level.as_deref().unwrap_or("info") {
-            "trace" => Level::TRACE,
-            "debug" => Level::DEBUG,
-            "info" | "notice" => Level::INFO,
-            "warn" => Level::WARN,
-            "error" | "fatal" => Level::ERROR,
-            _ => Level::ERROR,
-        }
-    }
-
-    pub fn log_file(&self) -> PathBuf {
-        match self.log.file.as_ref() {
-            Some(f) => f.to_owned(),
-            None => {
-                cfg_if::cfg_if! {
-                    if #[cfg(target_os = "windows")] {
-                        let mut path = std::env::temp_dir();
-                        path.push("wiretunn");
-                        path.push("wiretunn.log");
-                        path
-                    } else {
-                        PathBuf::from(r"/var/log/wiretunn/wiretunn.log")
-                    }
-                }
-            }
-        }
-    }
-
-    #[inline]
-    pub fn log_size(&self) -> u64 {
-        self.log
-            .size
-            .unwrap_or_else(|| Byte::from_u64_with_unit(128, byte_unit::Unit::KB).unwrap())
-            .as_u64()
-    }
-
-    #[inline]
-    pub fn log_num(&self) -> u64 {
-        self.log.num.unwrap_or(2)
-    }
-
-    #[inline]
     pub fn wg_devices(&self) -> &HashMap<String, WgDeviceConfig> {
         &self.wg_devices
     }
@@ -143,9 +95,6 @@ impl Config {
 
 #[derive(Debug, Default, Deserialize, Clone)]
 pub struct LogConfig {
-    /// enable output log to console
-    pub console: Option<bool>,
-
     /// set log level
     pub level: Option<String>,
 
@@ -157,6 +106,44 @@ pub struct LogConfig {
 
     /// number of logs, 0 means disable log
     pub num: Option<u64>,
+
+    /// log filter
+    pub filter: Option<String>,
+}
+
+impl LogConfig {
+    pub fn log_level(&self) -> tracing::Level {
+        use tracing::Level;
+        match self.level.as_deref().unwrap_or("info") {
+            "trace" => Level::TRACE,
+            "debug" => Level::DEBUG,
+            "info" | "notice" => Level::INFO,
+            "warn" => Level::WARN,
+            "error" | "fatal" => Level::ERROR,
+            _ => Level::ERROR,
+        }
+    }
+
+    pub fn log_file(&self) -> Option<PathBuf> {
+        self.file.to_owned()
+    }
+
+    #[inline]
+    pub fn log_size(&self) -> u64 {
+        self.size
+            .unwrap_or_else(|| Byte::from_u64_with_unit(128, byte_unit::Unit::KB).unwrap())
+            .as_u64()
+    }
+
+    #[inline]
+    pub fn log_num(&self) -> Option<u64> {
+        self.num.to_owned()
+    }
+
+    #[inline]
+    pub fn log_filter(&self) -> &Option<String> {
+        &self.filter
+    }
 }
 
 #[derive(Deserialize, Clone)]

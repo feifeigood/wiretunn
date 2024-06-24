@@ -3,7 +3,7 @@ use std::{path::PathBuf, str::FromStr};
 use clap::{command, Parser, Subcommand};
 use clap_verbosity_flag::{InfoLevel, Verbosity};
 
-use wiretunn::{bootstrap, config, log};
+use wiretunn::{bootstrap, config, infra};
 
 /// The app name
 const NAME: &str = "Wiretunn";
@@ -22,7 +22,7 @@ pub struct Cli {
 
 impl Cli {
     pub fn run(self) {
-        let _g = self.log_level().map(log::default);
+        let _g = self.log_level().map(infra::logging::default);
         match self.command {
             Commands::Run { conf, .. } => run_service(conf),
             Commands::Test { conf } => match config::Config::load(conf) {
