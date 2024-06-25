@@ -1,7 +1,7 @@
 use std::{collections::HashMap, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
 use device::WgDevice;
-use infra::logging::{init_with_config, LogGuard};
+use infra::logging::init_with_config;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use tun::TunBuilder;
@@ -46,9 +46,8 @@ impl App {
     }
 
     pub fn with_config(config: Config) -> Result<App, Error> {
-        let guard: AppGuard = {
-            let log_guard = Some(init_with_config(config.log_config()));
-            AppGuard { log_guard }
+        let guard = AppGuard {
+            log_guard: init_with_config(config.log_config()),
         };
 
         Ok(App {
@@ -183,7 +182,7 @@ pub fn bootstrap(conf: Option<PathBuf>) -> Result<(), Error> {
 
 #[allow(unused)]
 struct AppGuard {
-    log_guard: Option<LogGuard>,
+    log_guard: Option<tracing::dispatcher::DefaultGuard>,
 }
 
 /// Returns a version as specified in Cargo.toml

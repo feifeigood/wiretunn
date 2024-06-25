@@ -1,6 +1,12 @@
 //! Logging facilities
 
-use std::{env, io};
+use std::{
+    env, io,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        OnceLock,
+    },
+};
 
 use tracing::{
     dispatcher::{set_default, set_global_default},
@@ -18,16 +24,19 @@ use crate::config::LogConfig;
 
 mod rolling_file;
 
-pub struct LogGuard {
-    pub default_guard: DefaultGuard,
-    pub non_blocking_guard: Option<WorkerGuard>,
-}
+static LOG_INIT: AtomicBool = AtomicBool::new(false);
 
-pub fn init_with_config(config: &LogConfig) -> LogGuard {
+/// Hold WorkGuard to ensure that all buffered logs are flushed to the logfile
+static NON_BLOCKING: OnceLock<WorkerGuard> = OnceLock::new();
+
+pub fn init_with_config(config: &LogConfig) -> Option<DefaultGuard> {
+    if LOG_INIT.load(std::sync::atomic::Ordering::Relaxed) {
+        tracing::debug!("Can't initialize `tracing` dispatcher twice");
+        return None;
+    }
+
     let level = config.log_level();
     let filter: Option<&str> = config.log_filter().as_deref();
-    let mut non_blocking_guard: Option<WorkerGuard> = None;
-
     let dispatch = if let Some(log_file) = config.log_file() {
         let file_appender = rolling_file::RollingFile::new(
             log_file,
@@ -37,7 +46,7 @@ pub fn init_with_config(config: &LogConfig) -> LogGuard {
             None,
         );
         let (non_blocking_file, guard) = NonBlocking::new(file_appender);
-        non_blocking_guard = Some(guard);
+        _ = NON_BLOCKING.get_or_init(|| guard);
         make_dispatch(level, filter, non_blocking_file.and(io::stdout))
     } else {
         make_dispatch(level, filter, io::stdout)
@@ -45,13 +54,12 @@ pub fn init_with_config(config: &LogConfig) -> LogGuard {
 
     let default_guard = set_default(&dispatch);
     if let Err(e) = set_global_default(dispatch) {
-        tracing::debug!("Initialize set trace dispatcher error: {}", e);
+        tracing::warn!("Initialize set trace dispatcher error: {}", e);
     }
 
-    LogGuard {
-        default_guard,
-        non_blocking_guard,
-    }
+    LOG_INIT.store(true, Ordering::Release);
+
+    Some(default_guard)
 }
 
 pub fn default(console_level: Level) -> DefaultGuard {
