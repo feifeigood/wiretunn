@@ -31,7 +31,7 @@ pub extern "C" fn wiretunn_version() -> *mut c_char {
 #[no_mangle]
 pub unsafe extern "C" fn wiretunn_app_run(runtime_id: u8, s: *const c_char) -> i32 {
     // Init log
-    logging::default(tracing::Level::DEBUG);
+    let g = logging::default(tracing::Level::DEBUG);
 
     let config_str = match unsafe { CStr::from_ptr(s) }.to_str() {
         Ok(string) => string,
@@ -41,8 +41,6 @@ pub unsafe extern "C" fn wiretunn_app_run(runtime_id: u8, s: *const c_char) -> i
         }
     };
 
-    tracing::info!("{}", config_str);
-
     let config = match Config::load_from_str(config_str) {
         Ok(config) => config,
         Err(e) => {
@@ -50,6 +48,8 @@ pub unsafe extern "C" fn wiretunn_app_run(runtime_id: u8, s: *const c_char) -> i
             return exitcode::CONFIG;
         }
     };
+
+    drop(g);
 
     // Create Wiretunn App
     let app = Arc::new(match App::with_config(config) {
@@ -112,7 +112,7 @@ pub struct ShutdownHandle {
 #[no_mangle]
 pub unsafe extern "C" fn new_tunnel(s: *const c_char) -> *mut tokio::sync::Mutex<ShutdownHandle> {
     // Init log
-    logging::default(tracing::Level::DEBUG);
+    let g = logging::default(tracing::Level::DEBUG);
 
     let config_str = match unsafe { CStr::from_ptr(s) }.to_str() {
         Ok(string) => string,
@@ -122,8 +122,6 @@ pub unsafe extern "C" fn new_tunnel(s: *const c_char) -> *mut tokio::sync::Mutex
         }
     };
 
-    tracing::info!("{}", config_str);
-
     let config = match Config::load_from_str(config_str) {
         Ok(config) => config,
         Err(e) => {
@@ -131,6 +129,8 @@ pub unsafe extern "C" fn new_tunnel(s: *const c_char) -> *mut tokio::sync::Mutex
             return ptr::null_mut();
         }
     };
+
+    drop(g);
 
     // Create Wiretunn App
     let app = Arc::new(match App::with_config(config) {
