@@ -1,83 +1,70 @@
-use std::{collections::HashMap, fs, path::PathBuf};
+use std::{path::PathBuf, str::FromStr};
 
-use anyhow::Context;
-use clap::{command, Parser};
-use serde::Deserialize;
+use clap::{command, Parser, Subcommand};
+use clap_verbosity_flag::{InfoLevel, Verbosity};
 
-use tokio_util::{sync::CancellationToken, task::TaskTracker};
-use tracing::{error, info, Level};
-use wiretunn::{
-    device::{WgDevice, WgDeviceConfig},
-    signal,
-};
+use wiretunn::{bootstrap, config, infra};
 
-#[derive(Parser)]
-#[command(version, about)]
-pub struct Opts {
-    /// Sets a custom config file
-    #[arg(short, long, value_name = "FILE")]
-    config: PathBuf,
+/// The app name
+const NAME: &str = "Wiretunn";
 
-    /// Sets log level
-    #[arg(
-        long,
-        value_name = "LOG_LEVEL",
-        default_value_t = Level::ERROR
-    )]
-    log_level: Level,
+/// Wiretunn is WireGuard implementation in Rust for Mesh Networking
+///
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+pub struct Cli {
+    #[command(subcommand)]
+    pub command: Commands,
+
+    #[command(flatten)]
+    verbose: Verbosity<InfoLevel>,
 }
 
-#[derive(Deserialize)]
-pub struct Config {
-    #[serde(rename = "wireguard")]
-    pub wg_devices: HashMap<String, WgDeviceConfig>,
-}
+impl Cli {
+    pub fn run(self) {
+        let _g = self.log_level().map(infra::logging::default);
+        match self.command {
+            Commands::Run { conf, .. } => run_service(conf),
+            Commands::Test { conf } => match config::Config::load(conf) {
+                Ok(_) => println!("Test configuration file is ok."),
+                Err(err) => eprintln!("Test configuration file fail: {}", err),
+            },
+        }
+    }
 
-impl Config {
-    pub fn load_from_file(path: &PathBuf) -> anyhow::Result<Config> {
-        let config_contents = fs::read_to_string(path)
-            .with_context(|| format!("Can't open config file: {}", path.as_path().display()))?;
-
-        let config = toml::from_str(&config_contents)?;
-        Ok(config)
+    pub fn log_level(&self) -> Option<tracing::Level> {
+        self.verbose
+            .log_level()
+            .map(|s| s.to_string())
+            .and_then(|s| tracing::Level::from_str(&s).ok())
     }
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let opts = Opts::parse();
+#[derive(Subcommand, Debug)]
+pub enum Commands {
+    /// Run the WireTunn service
+    Run {
+        /// Config file
+        #[arg(short = 'c', long)]
+        conf: Option<std::path::PathBuf>,
+        /// Pid file
+        #[arg(short = 'p', long)]
+        pid: Option<std::path::PathBuf>,
+    },
 
-    tracing_subscriber::fmt()
-        .with_max_level(opts.log_level)
-        .init();
+    /// Test configuration and exit
+    Test {
+        /// Config file
+        #[arg(short = 'c', long)]
+        conf: Option<std::path::PathBuf>,
+    },
+}
 
-    let config = Config::load_from_file(&opts.config)?;
-    let tracker = TaskTracker::new();
-    let shutdown_token = CancellationToken::new();
+fn main() {
+    Cli::parse().run();
+}
 
-    for (name, config) in config.wg_devices {
-        let mut wg_device = WgDevice::builder().name(&name).build(config).await?;
-        let shutdown_token = shutdown_token.clone();
-        tracker.spawn(async move {
-            tokio::select! {
-                res = wg_device.wait_until_exit() => {
-                    if let Err(err) = res {
-                        error!("WireGuard {} error {}", wg_device.name(), err);
-                    }
-                }
-                _ = shutdown_token.cancelled() => {
-                    info!("WireGuard {} shutdown", wg_device.name());
-                    wg_device.shutdown_gracefully().await;
-                }
-            }
-        });
-    }
-
-    let _ = signal::shutdown().await;
-    shutdown_token.cancel();
-    tracker.close();
-    // Wait for all tasks to exit.
-    tracker.wait().await;
-
-    Ok(())
+fn run_service(conf: Option<PathBuf>) {
+    bootstrap(conf).expect("Failed to run Wiretunn");
+    tracing::info!("{} {} shutdown", crate::NAME, wiretunn::version());
 }

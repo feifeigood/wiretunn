@@ -25,7 +25,7 @@ mod imp {
         info!(
             // use target to remove 'imp' from output
             target: "wiretunn::signal",
-            "received {}, starting shutdown",
+            "Received {}, starting shutdown",
             name,
         );
     }
@@ -47,7 +47,7 @@ mod imp {
         info!(
             // use target to remove 'imp' from output
             target: "wiretunn::signal",
-            "received Ctrl-C, starting shutdown",
+            "Received Ctrl-C, starting shutdown",
         );
     }
 }

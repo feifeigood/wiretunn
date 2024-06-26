@@ -1,8 +1,20 @@
 [workspace]
 resolver = "2"
-members = ["wiretunn", "wiretunn-cli"]
+members = ["wiretunn", "wiretunn-cli", "wiretunn-ffi"]
 
 [workspace.dependencies]
+libc = "0.2.155"
 boringtun = { git = "https://github.com/feifeigood/boringtun.git", branch = "custom-tokio" }
 tracing = "0.1.40"
-tracing-subscriber = "0.3.18"
+tracing-subscriber = { version = "0.3.18", features = [
+    "std",
+    "fmt",
+    "env-filter",
+    "chrono",
+] }
+
+[profile.release]
+lto = true        # Enable Link Time Optimization.
+codegen-units = 1 # Use only 1 codegen-unit to enable full optimizations.
+panic = "abort"   # Must set abort, otherwise iOS/MacOS will panic.
+strip = true      # Automatically strip symbols from the binary.

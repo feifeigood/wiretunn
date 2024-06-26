@@ -1,16 +1,23 @@
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, SocketAddrV4, SocketAddrV6};
+use std::{
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
+    sync::Arc,
+};
 
 use boringtun::noise::{Tunn, TunnResult};
 use ipnet::IpNet;
 use parking_lot::RwLock;
 use socket2::{Domain, Protocol, Type};
+use tokio::net::UdpSocket;
 
-use crate::device::{allowed_ips::AllowedIps, Error};
+use crate::{
+    device::{allowed_ips::AllowedIps, ConnectUdpSocket},
+    Error,
+};
 
 #[derive(Default, Debug)]
 pub struct Endpoint {
     pub addr: Option<SocketAddr>,
-    pub conn: Option<socket2::Socket>,
+    pub conn: Option<Arc<ConnectUdpSocket>>,
 }
 
 pub struct Peer {
@@ -71,7 +78,7 @@ impl Peer {
     pub fn shutdown_endpoint(&self) {
         if let Some(conn) = self.endpoint.write().conn.take() {
             tracing::info!("Disconnecting from endpoint");
-            conn.shutdown(Shutdown::Both).unwrap();
+            conn.shutdown();
         }
     }
 
@@ -80,7 +87,7 @@ impl Peer {
         if endpoint.addr != Some(addr) {
             // We only need to update the endpoint if it differs from the current one
             if let Some(conn) = endpoint.conn.take() {
-                conn.shutdown(Shutdown::Both).unwrap();
+                conn.shutdown();
             }
 
             endpoint.addr = Some(addr);
@@ -92,7 +99,7 @@ impl Peer {
         port: u16,
         #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
         fwmark: Option<u32>,
-    ) -> Result<socket2::Socket, Error> {
+    ) -> Result<Arc<ConnectUdpSocket>, Error> {
         let mut endpoint = self.endpoint.write();
 
         if endpoint.conn.is_some() {
@@ -120,13 +127,16 @@ impl Peer {
             udp_conn.set_mark(fwmark)?;
         }
 
+        let udp_conn = Arc::new(ConnectUdpSocket::from(UdpSocket::from_std(
+            udp_conn.into(),
+        )?));
         tracing::info!(
             message="Connected endpoint",
             port=port,
             endpoint=?endpoint.addr.unwrap()
         );
 
-        endpoint.conn = Some(udp_conn.try_clone().unwrap());
+        endpoint.conn = Some(udp_conn.clone());
 
         Ok(udp_conn)
     }

@@ -1,13 +1,16 @@
-mod allowed_ips;
-mod config;
-mod peer;
+pub mod allowed_ips;
+pub mod peer;
 
-#[cfg(unix)]
-use std::os::unix::io::RawFd;
 use std::{
     io,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
-    sync::Arc,
+    ops::{Deref, DerefMut},
+    pin::Pin,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    task::{Context, Poll},
     time::Duration,
 };
 
@@ -19,117 +22,61 @@ use boringtun::{
     x25519,
 };
 use dashmap::DashMap;
-use futures::{FutureExt, SinkExt, StreamExt};
+use futures::{ready, FutureExt};
 
-use net_route::{Handle, Route};
+use ipnet::IpNet;
+use iprange::IpRange;
 use parking_lot::RwLock;
 use rand_core::{OsRng, RngCore};
 use socket2::{Domain, Protocol, Type};
 use tokio::{
+    io::ReadBuf,
     net::UdpSocket,
     sync::{
-        mpsc::{Receiver, Sender},
+        mpsc::{UnboundedReceiver, UnboundedSender},
         Mutex,
     },
-    task::{JoinError, JoinSet},
+    task::JoinSet,
     time,
 };
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, trace, warn, Level};
-use tun::{AsyncDevice, Configuration as TunConfiguration, Device as _, TunPacket};
+use tracing::*;
 
 use allowed_ips::AllowedIps;
 use peer::{AllowedIP, Peer};
 
-pub use config::WgDeviceConfig;
+use crate::{
+    config::{WgDeviceConfig, WgPeerConfig},
+    net::{mon_socket::MonSocket, stats::FlowStat},
+    tun::Tun,
+    Error,
+};
 
 const HANDSHAKE_RATE_LIMIT: u64 = 100; // The number of handshakes per second we can tolerate before using cookies
 
 const MAX_UDP_SIZE: usize = (1 << 16) - 1;
 
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error("i/o error: {0}")]
-    IoError(#[from] io::Error),
-    #[error("{0}")]
-    Socket(io::Error),
-    #[error("{0}")]
-    Connect(String),
-    #[error("create tun error: {0}")]
-    TunError(#[from] tun::Error),
-    #[error("spawn error: {0}")]
-    JoinError(#[from] JoinError),
-    #[error("{0}")]
-    IOCtl(io::Error),
-}
-
 #[derive(Default, Debug)]
-pub struct WgDeviceBuilder {
-    name: Option<String>,
-    #[cfg(unix)]
-    raw_fd: Option<RawFd>,
-}
+pub struct WgDeviceBuilder {}
 
 impl WgDeviceBuilder {
-    /// Set the device name
-    pub fn name(&mut self, name: &str) -> &mut WgDeviceBuilder {
-        self.name = Some(name.into());
-        self
-    }
-
-    /// Set the tun fd only linux
-    #[cfg(unix)]
-    pub fn file_descriptor(&mut self, raw_fd: RawFd) -> &mut WgDeviceBuilder {
-        self.raw_fd = Some(raw_fd);
-        self
-    }
-
-    pub async fn build(&self, config: WgDeviceConfig) -> Result<WgDevice, Error> {
-        let mut tun_config = TunConfiguration::default();
-        // Using L3 device for WireGuard
-        tun_config.layer(tun::Layer::L3).up();
-
-        #[cfg(target_os = "linux")]
-        tun_config.platform(|tun_config| {
-            // IFF_NO_PI preventing excessive buffer reallocating
-            tun_config.packet_information(false);
-        });
-
-        #[cfg(unix)]
-        if let Some(fd) = self.raw_fd {
-            tun_config.raw_fd(fd);
-        }
-
-        // macos only support tun device name like utun[0-9]
-        #[cfg(not(target_os = "macos"))]
-        if let Some(name) = &self.name {
-            tun_config.name(name);
-        }
-
-        // Set the interface address, like `ifconfig` or `netsh`
-        tun_config.address(config.address.addr());
-        tun_config.destination(config.address.addr());
-        tun_config.netmask(config.address.netmask());
-
-        // Set the interface mtu
-        if let Some(mtu) = config.mtu {
-            tun_config.mtu(mtu);
-        };
-
-        // Create a tunnel device
-        let iface = tun::create_as_async(&tun_config)?;
-        let name = iface.get_ref().name()?;
-
-        let (packet_in, packet_out) = tokio::sync::mpsc::channel(128);
-
+    pub async fn build(
+        &self,
+        tun_device: Tun,
+        config: WgDeviceConfig,
+        bind_iface: Option<String>,
+    ) -> Result<WgDevice, Error> {
+        let name = tun_device.tun_name()?;
+        let (iface_input, iface_output) = tun_device.run()?;
         let mut device_inner = WgDeviceInner {
             key_pair: RwLock::new(Default::default()),
             listen_port: Default::default(),
             #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
             fwmark: Default::default(),
-            iface: packet_in,
+            iface: iface_input,
             udp4: Default::default(),
             udp6: Default::default(),
+            flow_stat: Arc::new(FlowStat::new()),
             use_connected_socket: config.use_connected_socket,
             peers: Default::default(),
             peers_by_ip: RwLock::new(AllowedIps::new()),
@@ -138,44 +85,22 @@ impl WgDeviceBuilder {
             rate_limiter: RwLock::new(Default::default()),
         };
         device_inner.set_key(&config.private_key);
-        device_inner.open_listen_socket(0).await?; // Start listening on a random port
+        device_inner.open_listen_socket(0, bind_iface).await?; // Start listening on a random port
 
         #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
         if let Some(mark) = config.fwmark {
             device_inner.set_fwmark(mark).await?;
         }
 
-        let ifindex = {
-            cfg_if::cfg_if! {
-                if #[cfg(target_os = "macos")] {
-                    net_route::ifname_to_index(&name).ok_or(Error::IOCtl(io::Error::other(
-                        "No interface found for the index",
-                    )))?
-                } else if #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))] {
-                    ifname_to_index(&name).ok_or(Error::IOCtl(io::Error::other(
-                        "No interface found for the index",
-                    )))?
-                } else {
-                    unimplemented!()
-                }
-            }
-        };
-
-        let mut routes = vec![];
         for peer in config.wg_peers.iter() {
             let pub_key = peer.public_key;
             let preshared_key = peer.preshared_key;
             let endpoint = peer.endpoint;
-            let allowed_ips = peer
+            let allowed_ips: Vec<AllowedIP> = peer
                 .allowed_ips
                 .iter()
                 .map(|x| AllowedIP::from(*x))
                 .collect::<Vec<AllowedIP>>();
-
-            // Add peer route
-            peer.allowed_ips.iter().for_each(|ip| {
-                routes.push(Route::new(ip.addr(), ip.prefix_len()).with_ifindex(ifindex));
-            });
 
             device_inner
                 .update_peer(
@@ -184,39 +109,10 @@ impl WgDeviceBuilder {
                     false,
                     endpoint,
                     allowed_ips.as_slice(),
-                    None,
+                    peer.persistent_keepalive,
                     preshared_key,
                 )
                 .await;
-        }
-
-        // If fd provide, that should set route by fd creator like VPNService or NetworkExtension
-        #[cfg(unix)]
-        if self.raw_fd.is_none() {
-            // Apply static route to WireGuard
-            let handle = Handle::new()?;
-            let exist_routes = handle.list().await?;
-            let add_routes = routes.iter_mut().filter(|r1| {
-                for r2 in exist_routes.iter() {
-                    if r1.destination.eq(&r2.destination)
-                        && r1.prefix.eq(&r2.prefix)
-                        && r1.ifindex.eq(&r2.ifindex)
-                    {
-                        debug!(
-                            "Route {}/{} -> via {:?} dev {:?} already exists",
-                            r2.destination, r2.prefix, r2.gateway, r2.ifindex,
-                        );
-                        return false;
-                    }
-                }
-                true
-            });
-
-            for route in add_routes.into_iter() {
-                if let Err(err) = handle.add(route).await {
-                    warn!("Route add error: {}", err);
-                }
-            }
         }
 
         let mut device = WgDevice {
@@ -227,12 +123,10 @@ impl WgDeviceBuilder {
             shutdown_token: CancellationToken::new(),
         };
 
-        device.register_iface_handler(iface, packet_out)?;
+        device.register_iface_handler(iface_output)?;
         device.register_udp_handler(device.device_inner.udp4.clone().expect("Not connected"))?;
         device.register_udp_handler(device.device_inner.udp6.clone().expect("Not connected"))?;
         device.register_timers()?;
-
-        // TODO: register peer update handler
 
         Ok(device)
     }
@@ -264,18 +158,9 @@ impl WgDevice {
         self.name.as_str()
     }
 
-    pub async fn wait_until_exit(&mut self) -> Result<(), Error> {
-        block_until_done(&mut self.join_set).await
-    }
-
-    pub async fn shutdown_gracefully(&mut self) {
-        self.shutdown_token.cancel();
-    }
-
     pub fn register_iface_handler(
         &mut self,
-        iface: AsyncDevice,
-        mut packet_in: Receiver<Vec<u8>>,
+        mut iface_output: UnboundedReceiver<Vec<u8>>,
     ) -> Result<(), Error> {
         // The iface_handler handles packets received from the WireGuard virtual network
         // interface. The flow is as follows:
@@ -287,20 +172,20 @@ impl WgDevice {
         let shutdown = self.shutdown_token.clone();
         let d = self.device_inner.clone();
 
-        let (mut iface_out, mut iface_in) = iface.into_framed().split();
-
-        info!("WireGuard {} register interface handler", self.name);
+        info!("Device {} register interface handler", self.name);
 
         self.join_set.spawn(async move {
             loop {
                 tokio::select! {
-                    Some(Ok(packet)) = iface_in.next() => {
-                        d.handle_iface_packet(packet.get_bytes(), &mut dst_buf).await;
-                    }
-                    Some(packet) = packet_in.recv() => {
-                        if let Err(e) = iface_out.send(TunPacket::new(packet)).await {
-                            tracing::error!(message = "Sent IP packet error", error = ?e);
-                        }
+                    packet = iface_output.recv() => {
+                        let packet = match packet {
+                            Some(pkt) => pkt,
+                            None =>{
+                                trace!("tun device input channel closed");
+                                break
+                            }
+                        };
+                        d.handle_iface_packet(&packet, &mut dst_buf).await;
                     }
                     _ = shutdown.cancelled() => break,
                 }
@@ -311,16 +196,16 @@ impl WgDevice {
         Ok(())
     }
 
-    pub fn register_udp_handler(&mut self, udp: Arc<UdpSocket>) -> Result<(), Error> {
+    pub fn register_udp_handler(&mut self, udp: Arc<MonSocket>) -> Result<(), Error> {
         let shutdown = self.shutdown_token.clone();
         let d = self.device_inner.clone();
         let mut recv_buf = [0u8; MAX_UDP_SIZE];
         let mut dst_buf = [0u8; MAX_UDP_SIZE];
 
         info!(
-            "WireGuard {} register udp({}) handler",
+            "Device {} register udp({}) handler",
             self.name,
-            udp.local_addr().unwrap()
+            udp.get_ref().local_addr().unwrap()
         );
 
         self.join_set.spawn(async move {
@@ -345,7 +230,8 @@ impl WgDevice {
                     let p = peer.lock().await;
                     p.set_endpoint(addr);
                     if d.use_connected_socket {
-                        if let Ok(sock) = p.connect_endpoint(
+                        trace!("Try to create a connected socket for peer {}", addr);
+                        match p.connect_endpoint(
                             d.listen_port,
                             #[cfg(any(
                                 target_os = "android",
@@ -354,31 +240,36 @@ impl WgDevice {
                             ))]
                             d.fwmark,
                         ) {
-                            let mut recv_buf = [0u8; MAX_UDP_SIZE];
-                            let mut dst_buf = [0u8; MAX_UDP_SIZE];
-                            let peer = Arc::clone(&peer);
-                            let udp = UdpSocket::from_std(sock.into()).unwrap();
-                            inner_join_set.spawn(async move {
-                                loop {
-                                    let n = tokio::select! {
-                                        result = udp.recv(&mut recv_buf) => match result {
-                                            Ok(n) => n,
-                                            Err(_) => break,
-                                        },
-                                        _ = shutdown.cancelled() => break,
-                                    };
+                            Ok(udp) => {
+                                let mut recv_buf = [0u8; MAX_UDP_SIZE];
+                                let mut dst_buf = [0u8; MAX_UDP_SIZE];
+                                let peer = Arc::clone(&peer);
+                                inner_join_set.spawn(async move {
+                                    loop {
+                                        let n = tokio::select! {
+                                            result = udp.recv(&mut recv_buf) => match result {
+                                                Ok(n) => n,
+                                                Err(_) => break,
+                                            },
+                                            _ = shutdown.cancelled() => break,
+                                        };
 
-                                    d.handle_connect_udp_packet(
-                                        &udp,
-                                        &peer,
-                                        peer_addr,
-                                        &recv_buf[..n],
-                                        &mut dst_buf,
-                                    )
-                                    .await;
-                                }
-                            });
-                            reap_tasks(&mut inner_join_set);
+                                        d.handle_connect_udp_packet(
+                                            &udp,
+                                            &peer,
+                                            peer_addr,
+                                            &recv_buf[..n],
+                                            &mut dst_buf,
+                                        )
+                                        .await;
+                                    }
+                                });
+
+                                reap_tasks(&mut inner_join_set);
+                            }
+                            Err(e) => {
+                                error!(message = format!("Create a connected socket for peer {} error", addr), error =?e);
+                            }
                         }
                     }
                 }
@@ -394,14 +285,12 @@ impl WgDevice {
         let shutdown = self.shutdown_token.clone();
         let d = self.device_inner.clone();
 
-        info!("WireGuard {} register timers", self.name);
+        info!("Device {} register timers", self.name);
 
         self.join_set.spawn(async move {
-            let mut dst_buf = [0u8;MAX_UDP_SIZE];
-            let mut rate_limiter_interval =
-                time::interval(Duration::from_secs(1));
-            let mut update_peer_interval =
-                time::interval(Duration::from_secs(25));
+            let mut dst_buf = [0u8; MAX_UDP_SIZE];
+            let mut rate_limiter_interval = time::interval(Duration::from_secs(1));
+            let mut update_peer_interval = time::interval(Duration::from_secs(25));
 
             loop {
                 tokio::select! {
@@ -428,12 +317,13 @@ impl WgDevice {
                                 None => continue,
                             };
 
+                            trace!("Update peer {} timers", endpoint_addr);
                             match p.update_timers(&mut dst_buf[..]) {
                                 TunnResult::Done => {},
                                 TunnResult::Err(WireGuardError::ConnectionExpired) => {
                                     p.shutdown_endpoint(); // close open udp socket
                                 }
-                                TunnResult::Err(e) => {tracing::error!(message = "Timer error", error = ?e)},
+                                TunnResult::Err(e) => {error!(message = "Timer error", error = ?e)},
                                 TunnResult::WriteToNetwork(packet) => {
                                     match endpoint_addr {
                                         SocketAddr::V4(_) => {
@@ -456,31 +346,71 @@ impl WgDevice {
 
         Ok(())
     }
-}
 
-async fn block_until_done(join_set: &mut JoinSet<Result<(), Error>>) -> Result<(), Error> {
-    if join_set.is_empty() {
-        trace!("block_until_done called with no pending tasks");
-        return Ok(());
-    }
+    pub async fn set_peer(
+        &mut self,
+        pub_key: x25519::PublicKey,
+        remove: bool,
+        endpoint: Option<SocketAddr>,
+        mut allowed_ips: Vec<IpNet>,
+        keepalive: Option<u16>,
+        preshared_key: Option<[u8; 32]>,
+    ) {
+        if remove {
+            self.device_inner.remove_peer(&pub_key).await;
 
-    // Now wait for all of the tasks to complete.
-    let mut out = Ok(());
-    while let Some(join_result) = join_set.join_next().await {
-        match join_result {
-            Ok(result) => {
-                match result {
-                    Ok(_) => (),
-                    Err(e) => {
-                        // Save the last error.
-                        out = Err(e);
-                    }
-                }
+            if let Some(index) = self
+                .config
+                .wg_peers
+                .iter()
+                .position(|peer_conf| peer_conf.public_key.eq(&pub_key))
+            {
+                let peer_conf = self.config.wg_peers.remove(index);
+                allowed_ips.clone_from(&peer_conf.allowed_ips);
             }
-            Err(e) => return Err(Error::from(e)),
+        } else {
+            if self.device_inner.find_peer(&pub_key).is_some() {
+                warn!("Peer already exists");
+                return;
+            }
+
+            self.device_inner
+                .update_peer(
+                    pub_key,
+                    false,
+                    false,
+                    endpoint,
+                    &allowed_ips
+                        .iter()
+                        .map(|x| AllowedIP::from(*x))
+                        .collect::<Vec<AllowedIP>>(),
+                    keepalive,
+                    preshared_key,
+                )
+                .await;
+
+            self.config.wg_peers.push(WgPeerConfig {
+                public_key: pub_key,
+                preshared_key,
+                allowed_ips: allowed_ips.clone(),
+                persistent_keepalive: keepalive,
+                endpoint,
+            });
         }
+
+        _ = crate::sys::set_route_configuration(self.name.to_owned(), allowed_ips, remove).await;
     }
-    out
+
+    pub fn traffic(&self) -> (u64, u64) {
+        (
+            self.device_inner.flow_stat.tx(),
+            self.device_inner.flow_stat.rx(),
+        )
+    }
+
+    pub fn shutdown(&self) {
+        self.shutdown_token.cancel();
+    }
 }
 
 pub(super) struct WgDeviceInner {
@@ -490,10 +420,11 @@ pub(super) struct WgDeviceInner {
     #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
     fwmark: Option<u32>,
 
-    iface: Sender<Vec<u8>>,
-    udp4: Option<Arc<UdpSocket>>,
-    udp6: Option<Arc<UdpSocket>>,
+    iface: UnboundedSender<Vec<u8>>,
+    udp4: Option<Arc<MonSocket>>,
+    udp6: Option<Arc<MonSocket>>,
 
+    flow_stat: Arc<FlowStat>,
     use_connected_socket: bool,
 
     peers: DashMap<x25519::PublicKey, Arc<Mutex<Peer>>>,
@@ -509,7 +440,11 @@ impl WgDeviceInner {
         self.next_index.lock().next()
     }
 
-    pub async fn open_listen_socket(&mut self, mut port: u16) -> Result<(), Error> {
+    pub async fn open_listen_socket(
+        &mut self,
+        mut port: u16,
+        bind_iface: Option<String>,
+    ) -> Result<(), Error> {
         // Binds the network facing interfaces
         // First close any existing open socket, and remove them from the event loop
         // TODO: how to confirm udp socket has been close?
@@ -521,9 +456,17 @@ impl WgDeviceInner {
         }
 
         // Then open new sockets and bind to the port
+        let bind_addr4 = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port);
         let udp_sock4 = socket2::Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+
+        // bind() should be called after IP_UNICAST_IF on Windows
+        #[cfg(windows)]
+        if let Some(ref iface) = bind_iface {
+            crate::sys::set_ip_unicast_if(&udp_sock4, &bind_addr4.into(), iface)?;
+        };
+
         udp_sock4.set_reuse_address(true)?;
-        udp_sock4.bind(&SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port).into())?;
+        udp_sock4.bind(&bind_addr4.into())?;
         udp_sock4.set_nonblocking(true)?;
 
         if port == 0 {
@@ -531,13 +474,59 @@ impl WgDeviceInner {
             port = udp_sock4.local_addr()?.as_socket().unwrap().port();
         }
 
+        let udp4 = UdpSocket::from_std(udp_sock4.into())?;
+        #[cfg(unix)]
+        if let Some(ref iface) = bind_iface {
+            cfg_if::cfg_if! {
+               if  #[cfg(target_os = "macos")] {
+                    // Set IP_BOUND_IF for BSD-like
+                    crate::sys::set_ip_bound_if(&udp4, &bind_addr4.into(), iface)?;
+               } else if  #[cfg(target_os = "linux")] {
+                    // Set SO_BINDTODEVICE for binding to a specific interface
+                    crate::sys::set_bindtodevice(&udp4, iface)?;
+               } else {
+                    tracing::warn!("Outbound bind interface({}) has not ye been implemented on current platform", iface);
+               }
+            }
+        };
+
+        let bind_addr6 = SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, port, 0, 0);
         let udp_sock6 = socket2::Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP))?;
+
+        // bind() should be called after IP_UNICAST_IF on Windows
+        #[cfg(windows)]
+        if let Some(ref iface) = bind_iface {
+            crate::sys::set_ip_unicast_if(&udp_sock6, &bind_addr6.into(), iface)?;
+        };
+
         udp_sock6.set_reuse_address(true)?;
-        udp_sock6.bind(&SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, port, 0, 0).into())?;
+        udp_sock6.bind(&bind_addr6.into())?;
         udp_sock6.set_nonblocking(true)?;
 
-        self.udp4 = Some(Arc::new(UdpSocket::from_std(udp_sock4.into())?));
-        self.udp6 = Some(Arc::new(UdpSocket::from_std(udp_sock6.into())?));
+        let udp6 = UdpSocket::from_std(udp_sock6.into())?;
+        #[cfg(unix)]
+        if let Some(ref iface) = bind_iface {
+            cfg_if::cfg_if! {
+               if  #[cfg(target_os = "macos")] {
+                    // Set IP_BOUND_IF for BSD-like
+                    crate::sys::set_ip_bound_if(&udp6, &bind_addr6.into(), iface)?;
+               } else if  #[cfg(target_os = "linux")] {
+                    // Set SO_BINDTODEVICE for binding to a specific interface
+                    crate::sys::set_bindtodevice(&udp6, iface)?;
+               } else {
+                    tracing::warn!("Outbound bind interface({}) has not ye been implemented on current platform", iface);
+               }
+            }
+        };
+
+        self.udp4 = Some(Arc::new(MonSocket::from_socket(
+            udp4,
+            self.flow_stat.clone(),
+        )));
+        self.udp6 = Some(Arc::new(MonSocket::from_socket(
+            udp6,
+            self.flow_stat.clone(),
+        )));
 
         self.listen_port = port;
 
@@ -546,7 +535,7 @@ impl WgDeviceInner {
 
     pub async fn handle_connect_udp_packet(
         &self,
-        udp: &UdpSocket,
+        udp: &ConnectUdpSocket,
         peer: &Arc<Mutex<Peer>>,
         peer_addr: IpAddr,
         packet: &[u8],
@@ -566,12 +555,12 @@ impl WgDeviceInner {
             }
             TunnResult::WriteToTunnelV4(packet, addr) => {
                 if p.is_allowed_ip(addr) {
-                    _ = self.iface.send(packet.to_vec()).await;
+                    _ = self.iface.send(packet.to_vec());
                 }
             }
             TunnResult::WriteToTunnelV6(packet, addr) => {
                 if p.is_allowed_ip(addr) {
-                    _ = self.iface.send(packet.to_vec()).await;
+                    _ = self.iface.send(packet.to_vec());
                 }
             }
         };
@@ -588,7 +577,7 @@ impl WgDeviceInner {
 
     pub async fn handle_udp_packet(
         &self,
-        udp: &UdpSocket,
+        udp: &MonSocket,
         addr: SocketAddr,
         packet: &[u8],
         dst_buf: &mut [u8],
@@ -642,12 +631,12 @@ impl WgDeviceInner {
             TunnResult::WriteToTunnelV4(packet, addr) => {
                 if p.is_allowed_ip(addr) {
                     // TODO: avoid copy packet
-                    _ = self.iface.send(packet.to_vec()).await;
+                    _ = self.iface.send(packet.to_vec());
                 }
             }
             TunnResult::WriteToTunnelV6(packet, addr) => {
                 if p.is_allowed_ip(addr) {
-                    _ = self.iface.send(packet.to_vec()).await;
+                    _ = self.iface.send(packet.to_vec());
                 }
             }
         };
@@ -665,8 +654,6 @@ impl WgDeviceInner {
     }
 
     pub async fn handle_iface_packet(&self, packet: &[u8], dst_buf: &mut [u8]) {
-        trace_ip_packet("Received IP packet", packet);
-
         let dst_addr = match Tunn::dst_address(packet) {
             Some(addr) => addr,
             None => return,
@@ -684,8 +671,11 @@ impl WgDeviceInner {
                 error!(message = "Encapsulate error", error = ?e)
             }
             TunnResult::WriteToNetwork(packet) => {
-                let endpoint = peer.endpoint_mut();
-                if let Some(addr @ SocketAddr::V4(_)) = endpoint.addr {
+                let mut endpoint = peer.endpoint_mut();
+                if let Some(conn) = endpoint.conn.as_mut() {
+                    // Prefer to send using the connected socket
+                    let _: Result<_, _> = conn.try_send(packet);
+                } else if let Some(addr @ SocketAddr::V4(_)) = endpoint.addr {
                     let _: Result<_, _> = self.udp4.as_ref().unwrap().try_send_to(packet, addr);
                 } else if let Some(addr @ SocketAddr::V6(_)) = endpoint.addr {
                     let _: Result<_, _> = self.udp6.as_ref().unwrap().try_send_to(packet, addr);
@@ -736,7 +726,7 @@ impl WgDeviceInner {
         Ok(())
     }
 
-    pub async fn remove_peer(&self, pub_key: &x25519::PublicKey) {
+    async fn remove_peer(&self, pub_key: &x25519::PublicKey) {
         if let Some((_, peer)) = self.peers.remove(pub_key) {
             // Found a peer to remove, now purge all references to it:
             {
@@ -802,9 +792,10 @@ impl WgDeviceInner {
             }
         }
 
-        info!("Peer added");
+        info!(message = "Peer added", endpoint=?endpoint);
     }
 
+    #[allow(unused)]
     pub fn clear_peers(&self) {
         self.peers.clear();
         self.peers_by_idx.clear();
@@ -875,7 +866,7 @@ impl Default for IndexLfsr {
 
 /// Sets the value for the `SO_MARK` option on this socket.
 #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
-fn set_socket_fwmark<S>(socket: &S, mark: u32) -> io::Result<()>
+fn set_socket_fwmark<S>(socket: &S, mark: u32) -> std::io::Result<()>
 where
     S: std::os::unix::io::AsRawFd,
 {
@@ -892,20 +883,6 @@ where
     result
 }
 
-#[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
-fn ifname_to_index(name: &str) -> Option<u32> {
-    use std::ffi::CString;
-
-    let ifname = CString::new(name).ok()?;
-    let ifindex = unsafe { libc::if_nametoindex(ifname.as_ptr()) };
-
-    if ifindex != 0 {
-        Some(ifindex)
-    } else {
-        None
-    }
-}
-
 /// Reap finished tasks from a `JoinSet`, without awaiting or blocking.
 fn reap_tasks(join_set: &mut JoinSet<()>) {
     while FutureExt::now_or_never(join_set.join_next())
@@ -914,22 +891,187 @@ fn reap_tasks(join_set: &mut JoinSet<()>) {
     {}
 }
 
-fn trace_ip_packet(message: &str, packet: &[u8]) {
-    if tracing::enabled!(Level::TRACE) {
-        use smoltcp::wire::*;
+/// Wrappers for connected `UdpSocket`
+#[derive(Debug)]
+#[pin_project::pin_project(PinnedDrop)]
+pub struct ConnectUdpSocket {
+    #[pin]
+    socket: UdpSocket,
+    running: AtomicBool,
+}
 
-        match IpVersion::of_packet(packet) {
-            Ok(IpVersion::Ipv4) => trace!(
-                "{}: {}",
-                message,
-                PrettyPrinter::<Ipv4Packet<&mut [u8]>>::new("", &packet)
-            ),
-            Ok(IpVersion::Ipv6) => trace!(
-                "{}: {}",
-                message,
-                PrettyPrinter::<Ipv6Packet<&mut [u8]>>::new("", &packet)
-            ),
-            _ => {}
+impl ConnectUdpSocket {
+    pub fn shutdown(&self) {
+        self.running.store(false, Ordering::Relaxed);
+    }
+
+    /// Wrapper of `UdpSocket::poll_send`
+    pub fn poll_send(&self, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
+        if self.running.load(Ordering::Relaxed) {
+            return self.socket.poll_send(cx, buf);
         }
+
+        Err(io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "connect udp socket already closed",
+        ))
+        .into()
+    }
+
+    /// Wrapper of `UdpSocket::poll_send_to`
+    #[inline]
+    pub async fn send(&self, buf: &[u8]) -> io::Result<usize> {
+        if self.running.load(Ordering::Relaxed) {
+            return self.socket.send(buf).await;
+        }
+
+        Err(io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "connect udp socket already closed",
+        ))
+    }
+
+    /// Wrapper of `UdpSocket::poll_recv`
+    #[inline]
+    pub fn poll_recv(&self, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
+        if self.running.load(Ordering::Relaxed) {
+            ready!(self.socket.poll_recv(cx, buf))?;
+            return Ok(()).into();
+        }
+
+        Err(io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "connect udp socket already closed",
+        ))
+        .into()
+    }
+
+    /// Wrapper of `UdpSocket::recv`
+    #[inline]
+    pub async fn recv(&self, buf: &mut [u8]) -> io::Result<usize> {
+        if self.running.load(Ordering::Relaxed) {
+            let n = self.socket.recv(buf).await?;
+            return Ok(n);
+        }
+
+        Err(io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "connect udp socket already closed",
+        ))
+    }
+}
+
+#[pin_project::pinned_drop]
+impl PinnedDrop for ConnectUdpSocket {
+    fn drop(self: Pin<&mut Self>) {
+        debug!("Drop a connected peer socket");
+    }
+}
+
+impl Deref for ConnectUdpSocket {
+    type Target = tokio::net::UdpSocket;
+
+    fn deref(&self) -> &Self::Target {
+        &self.socket
+    }
+}
+
+impl DerefMut for ConnectUdpSocket {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.socket
+    }
+}
+
+impl From<tokio::net::UdpSocket> for ConnectUdpSocket {
+    fn from(socket: tokio::net::UdpSocket) -> Self {
+        ConnectUdpSocket {
+            socket,
+            running: AtomicBool::new(true),
+        }
+    }
+}
+
+#[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+impl std::os::unix::io::AsRawFd for ConnectUdpSocket {
+    fn as_raw_fd(&self) -> std::os::unix::prelude::RawFd {
+        self.socket.as_raw_fd()
+    }
+}
+
+/// Calculate complex `AllowedIPs` settings for Wireguard peer, by subtracting the "disallowed" IP
+/// https://www.procustodibus.com/blog/2021/03/wireguard-allowedips-calculator/
+pub fn split_disallowed_ips(allowed_ips: &[IpNet], disallowed_ips: &Vec<IpNet>) -> Vec<IpNet> {
+    let mut allowed_range4 = IpRange::new();
+    let mut allowed_range6 = IpRange::new();
+
+    for allowed_ip in allowed_ips.iter() {
+        match allowed_ip {
+            IpNet::V4(ip4) => _ = allowed_range4.add(ip4.to_owned()),
+            IpNet::V6(ip6) => _ = allowed_range6.add(ip6.to_owned()),
+        }
+    }
+
+    let mut disallowed_range4 = IpRange::new();
+    let mut disallowed_range6 = IpRange::new();
+
+    for disallowed_ip in disallowed_ips {
+        match disallowed_ip {
+            IpNet::V4(ip4) => _ = disallowed_range4.add(ip4.to_owned()),
+            IpNet::V6(ip6) => _ = disallowed_range6.add(ip6.to_owned()),
+        }
+    }
+
+    let mut merged_allowed_ips: Vec<IpNet> = vec![];
+
+    merged_allowed_ips.extend(
+        allowed_range4
+            .exclude(&disallowed_range4)
+            .iter()
+            .map(IpNet::from)
+            .collect::<Vec<IpNet>>(),
+    );
+
+    merged_allowed_ips.extend(
+        allowed_range6
+            .exclude(&disallowed_range6)
+            .iter()
+            .map(IpNet::from)
+            .collect::<Vec<IpNet>>(),
+    );
+
+    merged_allowed_ips.sort();
+    merged_allowed_ips
+}
+
+#[cfg(test)]
+mod tests {
+    use ipnet::IpNet;
+
+    use super::split_disallowed_ips;
+
+    #[test]
+    fn test_split_disallowed_ips() {
+        let allowed_ips: Vec<IpNet> = vec!["0.0.0.0/0".parse().unwrap(), "::/0".parse().unwrap()];
+        let disallowed_ips: Vec<IpNet> = vec![
+            "0.0.0.0/8".parse().unwrap(),
+            "10.0.0.0/8".parse().unwrap(),
+            "127.0.0.0/8".parse().unwrap(),
+            "169.254.0.0/16".parse().unwrap(),
+            "172.16.0.0/12".parse().unwrap(),
+            "192.168.0.0/16".parse().unwrap(),
+            "240.0.0.0/4".parse().unwrap(),
+            "fc00::/7".parse().unwrap(),
+            "fe80::/10".parse().unwrap(),
+        ];
+
+        // expect: 1.0.0.0/8, 2.0.0.0/7, 4.0.0.0/6, 8.0.0.0/7, 11.0.0.0/8, 12.0.0.0/6, 16.0.0.0/4, 32.0.0.0/3, 64.0.0.0/3, 96.0.0.0/4, 112.0.0.0/5, 120.0.0.0/6, 124.0.0.0/7, 126.0.0.0/8, 128.0.0.0/3, 160.0.0.0/5, 168.0.0.0/8, 169.0.0.0/9, 169.128.0.0/10, 169.192.0.0/11, 169.224.0.0/12, 169.240.0.0/13, 169.248.0.0/14, 169.252.0.0/15, 169.255.0.0/16, 170.0.0.0/7, 172.0.0.0/12, 172.32.0.0/11, 172.64.0.0/10, 172.128.0.0/9, 173.0.0.0/8, 174.0.0.0/7, 176.0.0.0/4, 192.0.0.0/9, 192.128.0.0/11, 192.160.0.0/13, 192.169.0.0/16, 192.170.0.0/15, 192.172.0.0/14, 192.176.0.0/12, 192.192.0.0/10, 193.0.0.0/8, 194.0.0.0/7, 196.0.0.0/6, 200.0.0.0/5, 208.0.0.0/4, 224.0.0.0/4, ::/1, 8000::/2, c000::/3, e000::/4, f000::/5, f800::/6, fe00::/9, fec0::/10, ff00::/8
+        println!(
+            "{}",
+            split_disallowed_ips(&allowed_ips, &disallowed_ips)
+                .iter()
+                .map(|x| format!("{}", x))
+                .collect::<Vec<String>>()
+                .join(", ")
+        );
     }
 }
